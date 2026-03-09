@@ -21,6 +21,7 @@
 #include "tensorrt_llm/runtime/common.h"
 
 #include <cstdint>
+#include <cub/cub.cuh>
 
 using namespace tensorrt_llm::common;
 using namespace tensorrt_llm::runtime;
@@ -188,6 +189,133 @@ __global__ void addBiasSoftMax(T* logits, T** logitsPtrs, T* probs, float* outpu
     }
 }
 
+#if defined(__aarch64__)
+struct __align__(8) MD
+{
+    float m;
+    float d;
+};
+
+__device__ __forceinline__ MD reduce_md_op(MD a, MD b)
+{
+    bool a_bigger = (a.m > b.m);
+    MD bigger_m = a_bigger ? a : b;
+    MD smaller_m = a_bigger ? b : a;
+    MD res;
+    res.d = bigger_m.d + smaller_m.d * __expf(smaller_m.m - bigger_m.m);
+    res.m = bigger_m.m;
+    return res;
+}
+
+template <typename T>
+__global__ void addBiasSoftMaxOnline(T* logits, T** logitsPtrs, T* probs, float* outputEntropy, T const* bias,
+    float const* temperatures, int32_t const* endIds, FinishedState const* finished, int32_t const* beamWidths,
+    int32_t const* batchSlots, float const* minPs, int32_t maxBatchSize, int32_t maxBeamWidth, int32_t vocabSize,
+    int32_t vocabSizePadded, bool skipSoftMax, bool batchSlotsLogits, bool ptrsForBeams, bool const* skipDecode)
+{
+    auto const batchIdx = blockIdx.x;
+    auto const beamIdx = blockIdx.y;
+    auto const batchSlot = batchSlots ? batchSlots[batchIdx] : batchIdx;
+    if (beamWidths && beamIdx >= beamWidths[batchSlot])
+    {
+        return;
+    }
+    if ((skipDecode != nullptr && skipDecode[batchSlot]))
+    {
+        return;
+    }
+
+    auto const batchIdxLogits = batchSlotsLogits ? batchSlot : batchIdx;
+    FinishedState const finishState
+        = finished != nullptr ? finished[beamIdx * maxBatchSize + batchSlot] : FinishedState::empty();
+    if (finishState.isSkipDecoding())
+    {
+        return;
+    }
+    bool const finish = finishState.isFinished();
+
+    auto logitsPtr = logitsPtrs ? (ptrsForBeams ? logitsPtrs[batchIdx * maxBeamWidth + beamIdx]
+                                                : logitsPtrs[batchIdx] + beamIdx * vocabSizePadded)
+                                : logits + (batchIdxLogits * maxBeamWidth + beamIdx) * vocabSizePadded;
+
+    T const MAX_T_VAL = (std::is_same<T, half>::value) ? HALF_FLT_MAX : FLT_MAX;
+    float const EPSILON = (std::is_same<T, half>::value) ? 1e-3f : 1e-6f;
+
+    auto const tempInv = temperatures ? T{1.f / (temperatures[batchSlot] + EPSILON)} : T{1.f};
+    float minP = minPs != nullptr ? minPs[batchSlot] : 0.0f;
+
+    MD md_partial;
+    md_partial.m = -FLT_MAX;
+    md_partial.d = 0.0F;
+
+    for (int tid = threadIdx.x; tid < vocabSizePadded; tid += blockDim.x)
+    {
+        auto logit = logitsPtr[tid];
+        logit = temperatures ? logit * tempInv : logit;
+
+        if (tid < vocabSize) {
+            if (finish && endIds != nullptr) {
+                logit = (tid == endIds[batchSlot]) ? MAX_T_VAL : -MAX_T_VAL;
+            } else {
+                logit += (bias != nullptr) ? bias[tid] : T{0.0f};
+            }
+        } else {
+            logit = -MAX_T_VAL;
+        }
+
+	logitsPtr[tid] = logit;
+        MD new_elem;
+        new_elem.m = static_cast<float>(logit);
+        new_elem.d = 1.0F;
+        md_partial = reduce_md_op(md_partial, new_elem);
+    }
+
+    if (skipSoftMax) return;
+    typedef cub::BlockReduce<MD, 1024> BlockReduce;
+    __shared__ typename BlockReduce::TempStorage temp_storage;
+    MD final_md = BlockReduce(temp_storage).Reduce(md_partial, reduce_md_op);
+
+    __shared__ float sMaxVal, sSumVal;
+    if (threadIdx.x == 0) {
+        sMaxVal = final_md.m;
+        sSumVal = final_md.d;
+    }
+    __syncthreads();
+
+    int const offset = (probs != nullptr) ? ((batchIdxLogits * maxBeamWidth + beamIdx) * vocabSizePadded) : 0;
+    T* dst = (probs != nullptr) ? probs : logitsPtr;
+    float entropy = 0.0f;
+    float sum_inverse = __fdividef(1.0F, sSumVal + EPSILON);
+    for (int tid = threadIdx.x; tid < vocabSizePadded; tid += blockDim.x)
+    {
+        float val = __expf(static_cast<float>(logitsPtr[tid]) - sMaxVal);
+
+        if (val < minP) {
+            val = 0.0f;
+            logitsPtr[tid] = -MAX_T_VAL;
+        }
+
+        float softmaxValue = val * sum_inverse;
+        if (outputEntropy) {
+            entropy += softmaxValue * __logf(softmaxValue + EPSILON);
+        }
+
+        if (probs != nullptr) {
+            dst[offset + tid] = static_cast<T>(softmaxValue);
+        } else {
+            logitsPtr[tid] = static_cast<T>(__logf(softmaxValue + EPSILON));
+        }
+    }
+
+    if (outputEntropy) {
+        entropy = blockReduceSum<float>(entropy);
+        if (threadIdx.x == 0) {
+            outputEntropy[batchSlot * maxBeamWidth + beamIdx] = -entropy;
+        }
+    }
+}
+#endif
+
 template <typename T>
 void invokeAddBiasSoftMax(BiasSoftmaxParams<T> const params, cudaStream_t stream)
 {
@@ -196,11 +324,24 @@ void invokeAddBiasSoftMax(BiasSoftmaxParams<T> const params, cudaStream_t stream
     dim3 grid(params.batchSize, params.maxBeamWidth);
     auto const vocabRoundedToWarp = roundUp(params.vocabSize, 32);
     dim3 block(std::min(vocabRoundedToWarp, 1024)); // vocabSize is usually larger than 1024
+    #if defined(__aarch64__)
+    if (vocabRoundedToWarp < 1024) {
+        addBiasSoftMax<<<grid, block, 0, stream>>>(params.logits, params.logitsPtrs, params.probs, params.outputEntropy,
+        params.bias, params.temperatures, params.endIds, params.finished, params.beamWidths, params.batchSlots,
+        params.minPs, params.maxBatchSize, params.maxBeamWidth, params.vocabSize, params.vocabSizePadded,
+        params.skipSoftMax, params.batchSlotsLogits, params.ptrsForBeams, params.skipDecode);
+    } else {
+        addBiasSoftMaxOnline<<<grid, block, 0, stream>>>(params.logits, params.logitsPtrs, params.probs, params.outputEntropy,
+        params.bias, params.temperatures, params.endIds, params.finished, params.beamWidths, params.batchSlots,
+        params.minPs, params.maxBatchSize, params.maxBeamWidth, params.vocabSize, params.vocabSizePadded,
+        params.skipSoftMax, params.batchSlotsLogits, params.ptrsForBeams, params.skipDecode);
+    }
+    #else
     addBiasSoftMax<<<grid, block, 0, stream>>>(params.logits, params.logitsPtrs, params.probs, params.outputEntropy,
         params.bias, params.temperatures, params.endIds, params.finished, params.beamWidths, params.batchSlots,
         params.minPs, params.maxBatchSize, params.maxBeamWidth, params.vocabSize, params.vocabSizePadded,
         params.skipSoftMax, params.batchSlotsLogits, params.ptrsForBeams, params.skipDecode);
-
+    #endif
     TLLM_LOG_TRACE("%s stop", __PRETTY_FUNCTION__);
 }
 
