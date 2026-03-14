@@ -126,11 +126,63 @@ __global__ void updateCacheIndirectionKernel(
     tgtCI[tgtOffset] = (step == lastStep) ? tgtIndexBeam : srcCI[srcOffset];
 }
 
+#if defined(__aarch64__)
+#define BEAMS_PER_BLOCK 96
+#define PER_STEP 8
+#define THREADS_PER_BLOCK (PER_STEP * BEAMS_PER_BLOCK)
+
+__global__ void updateCacheIndirectionKernelV1(
+    int* tgtCI, int const* srcCI, BeamHypotheses bh, int const nMaxAttentionWindow, int const nSinkTokenLength)
+{
+    // Update cache indirections which steps are between `bh.inputLength[x]` to `sequenceLengths[x]`
+    int const step = blockIdx.x * PER_STEP + threadIdx.x % PER_STEP;
+    size_t const nBM{bh.nBeamWidth};
+    size_t const nBMIn{bh.nBeamWidthIn};
+    size_t const nBMOut{bh.nBeamWidthOut};
+    size_t const nMSL{bh.nMaxSeqLen};
+    int const indexBatch = blockIdx.y;
+    int const batchSlot = bh.batchSlots[indexBatch];
+    int const tgtIndexBeam = blockIdx.z * BEAMS_PER_BLOCK + threadIdx.x / PER_STEP;
+    int const tgtIndexBatchBeam = batchSlot * nBM + tgtIndexBeam;
+    int const lastStep{bh.sequenceLengths[tgtIndexBatchBeam] - 1}; // minus 1 since it is updated in stage 3 kernel
+
+    // Return early when at least one of the conditions is true:
+    // 1. `step` is out of the bound
+    // 2. `step` is inside of input part (since context KV Cache is shared)
+    // 3. `step` is outside of attention widow
+    if (step >= nMSL || tgtIndexBeam >= bh.nBeamWidthOut || step < bh.inputLengths[tgtIndexBatchBeam] || step < (nMSL - nMaxAttentionWindow))
+    {
+        return;
+    }
+
+    // Keep all past tokens by parentIdsPtr
+    int const srcIndexBeam = bh.parentIdsPtr[batchSlot][tgtIndexBeam * nMSL + lastStep];
+    // Return early when the source beam isfinished
+    if (bh.finished[tgtIndexBatchBeam].isFinished())
+    {
+        return;
+    }
+
+    int const stepCirc = (step >= nSinkTokenLength)
+        ? nSinkTokenLength + (step - nSinkTokenLength) % (nMaxAttentionWindow - nSinkTokenLength)
+        : step;
+    // Consider cyclic kv cache for the indir tables
+    uint32_t const tgtOffset = batchSlot * nBMOut * nMaxAttentionWindow + tgtIndexBeam * nMaxAttentionWindow + stepCirc;
+    uint32_t const srcOffset = batchSlot * nBMIn * nMaxAttentionWindow + srcIndexBeam * nMaxAttentionWindow + stepCirc;
+    tgtCI[tgtOffset] = (step == lastStep) ? tgtIndexBeam : srcCI[srcOffset];
+}
+#endif
+
 void invokeUpdateCacheIndirection(int* tgtCI, int const* srcCI, BeamHypotheses& bh,
     runtime::SizeType32 const maxAttentionWindow, runtime::SizeType32 sinkTokenLength, cudaStream_t stream)
 {
+    #if defined(__aarch64__)
+    dim3 grid_opt1(common::roundUp(bh.nMaxSeqLen, PER_STEP), bh.nBatchSize, common::roundUp(bh.nBeamWidthOut, BEAMS_PER_BLOCK ) / BEAMS_PER_BLOCK);
+    updateCacheIndirectionKernelV1<<<grid_opt1, THREADS_PER_BLOCK , 0, stream>>>(tgtCI, srcCI, bh, maxAttentionWindow, sinkTokenLength);
+    #else
     dim3 const grid(common::roundUp(bh.nMaxSeqLen, 32), bh.nBatchSize, bh.nBeamWidthOut);
     updateCacheIndirectionKernel<<<grid, 32, 0, stream>>>(tgtCI, srcCI, bh, maxAttentionWindow, sinkTokenLength);
+    #endif
     sync_check_cuda_error(stream);
 }
 

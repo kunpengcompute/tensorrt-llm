@@ -1295,9 +1295,17 @@ template <
     unsigned THREADS_PER_VALUE = threads_per_value<T>(dh_max(Dh)),
     // The unroll factor for loading from K cache.
     // Set it default to 4 for higher occupancy (by reducing registers usage).
+    #if defined(__aarch64__)
+    unsigned K_LOOP_UNROLL = 2,
+    #else
     unsigned K_LOOP_UNROLL = 4,
+    #endif
     // The unroll factor for loading from V cache.
+    #if defined(__aarch64__)
+    unsigned V_LOOP_UNROLL = 2,
+    #else
     unsigned V_LOOP_UNROLL = 8,
+    #endif
     // Launch bounds
     unsigned MAX_THEADS_PER_BLOCK
     = Launch_bounds_config<T, Tcache, THREADS_PER_BLOCK, dh_max(Dh), DO_CROSS_ATTENTION, HAS_BEAMS, POS_SHIFT>()
@@ -1798,7 +1806,9 @@ __global__ void __launch_bounds__(MAX_THEADS_PER_BLOCK, MIN_BLOCKS_PER_SM) maske
         qk = dot<Qk_vec_accum, Qk_vec_k>(q, k);
         if (QK_VECS_PER_Dh_MAX <= WARP_SIZE)
         {
+#if defined(__x86_64__)
 #pragma unroll
+#endif
             for (int mask = QK_VECS_PER_Dh_MAX / 2; mask >= 1; mask /= 2)
             {
                 qk += __shfl_xor_sync(shfl_mask(QK_VECS_PER_Dh_MAX), qk, mask);
@@ -1896,7 +1906,9 @@ __global__ void __launch_bounds__(MAX_THEADS_PER_BLOCK, MIN_BLOCKS_PER_SM) maske
 
     // Load the Q values from shared memory. The values are reused during the loop on K.
     K_vec_accum q_vec[K_VECS_PER_THREAD];
+#if defined(__x86_64__)
 #pragma unroll
+#endif
     for (unsigned ii = 0; ii < K_VECS_PER_THREAD; ++ii)
     {
         q_vec[ii] = vec_conversion<K_vec_accum, K_vec_k>(*reinterpret_cast<K_vec_k const*>(
@@ -2142,7 +2154,9 @@ __global__ void __launch_bounds__(MAX_THEADS_PER_BLOCK, MIN_BLOCKS_PER_SM) maske
         qk_max = fmaxf(qk_max, __shfl_xor_sync(unsigned(-1), qk_max, 18));
     }
 #else
+#if defined(__x86_64__)
 #pragma unroll
+#endif
     for (int mask = WARP_SIZE / 2; mask >= THREADS_PER_KEY; mask /= 2)
     {
         qk_max = fmaxf(qk_max, __shfl_xor_sync(uint32_t(-1), qk_max, mask));
@@ -2196,7 +2210,9 @@ __global__ void __launch_bounds__(MAX_THEADS_PER_BLOCK, MIN_BLOCKS_PER_SM) maske
 
     // The warps finalize the reduction.
     qk_max = lane < WARPS_PER_BLOCK ? red_smem[lane] : -FLT_MAX;
+#if defined(__x86_64__)
 #pragma unroll
+#endif
     for (int mask = WARPS_PER_BLOCK / 2; mask >= 1; mask /= 2)
     {
         qk_max = fmaxf(qk_max, __shfl_xor_sync(uint32_t(-1), qk_max, mask));
@@ -2484,7 +2500,9 @@ __global__ void __launch_bounds__(MAX_THEADS_PER_BLOCK, MIN_BLOCKS_PER_SM) maske
     __syncthreads();
 
     // Run the final reduction amongst the different groups computing different partial outputs.
+#if defined(__x86_64__)
 #pragma unroll
+#endif
     for (int active_groups = V_PER_ITER; active_groups >= 2; active_groups /= 2)
     {
 
@@ -2664,7 +2682,9 @@ __global__ void __launch_bounds__(MAX_THEADS_PER_BLOCK, MIN_BLOCKS_PER_SM) maske
             }
 
             // Run the final reduction amongst the different groups computing different partial outputs.
+#if defined(__x86_64__)
 #pragma unroll
+#endif
             for (int active_groups = V_PER_ITER; active_groups >= 2; active_groups /= 2)
             {
 

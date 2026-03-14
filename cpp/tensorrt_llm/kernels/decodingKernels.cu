@@ -381,9 +381,76 @@ __global__ void insertUnfinishedPathKernel(BeamHypotheses bh)
     }
 }
 
+#if defined(__aarch64__)
+__global__ void insertUnfinishedPathKernelParallelV1(BeamHypotheses bh)
+{
+    size_t const bid = blockIdx.x;       // Batch index
+    size_t const tid = threadIdx.x;      // Beam index within block
+    size_t const nBM{bh.nBeamWidth};
+    size_t const nMBS{bh.nMaxBatchSize};
+    size_t const nMSL{bh.nMaxSeqLen};
+    bool const bOutputLogProbs{bh.logProbsCBA != nullptr && bh.logProbsTiled != nullptr};
+
+    if (bh.batchDones[bid] || tid >= nBM)
+    {
+        return;
+    }
+
+    int const i = tid;
+    int const srcBeam = bid * nBM + i;
+    int const dstBeam = bid * nBM * 2 + i + bh.numBeamsCBA[bid];
+    int const step = bh.sequenceLengths[srcBeam] - 1;
+
+    if (step < 0) return;
+
+    // The last token
+    int const srcId = srcBeam * nMSL + step;
+    int const dstId = dstBeam * nMSL + step;
+    bh.outputIdsCBA[dstId] = bh.outputIdsUnfinish[srcId];
+    if (bOutputLogProbs)
+    {
+        bh.logProbsCBA[dstId] = bh.logProbsTiled[step * nMBS * nBM + srcBeam];
+    }
+
+    // Previous tokens
+    int prevId = bh.parentIdsUnfinish[srcId];
+    for (int j = step - 1; j >= 0; --j)
+    {
+        int const index = bid * nBM * nMSL + prevId * nMSL + j;
+        bh.outputIdsCBA[dstBeam * nMSL + j] = bh.outputIdsUnfinish[index];
+        prevId = bh.parentIdsUnfinish[index];
+    }
+
+    if (bOutputLogProbs)
+    {
+        prevId = bh.parentIdsUnfinish[srcId];
+        for (int j = step - 1; j >= 0; --j)
+        {
+            int const index = bid * nBM * nMSL + prevId * nMSL + j;
+            bh.logProbsCBA[dstBeam * nMSL + j] = bh.logProbsTiled[j * nMBS * nBM + bid * nBM + prevId];
+            prevId = bh.parentIdsUnfinish[index];
+        }
+    }
+
+    // Other parameters
+    bh.sequenceLengthsCBA[dstBeam] = bh.sequenceLengths[srcBeam];
+    bh.normedScoresCBA[dstBeam]
+        = applyLengthPenalty(bh.cumLogProbs[srcBeam], step - bh.inputLengths[srcBeam] + 1, bh.lengthPenalties[bid]);
+    bh.cumLogProbsCBA[dstBeam] = bh.cumLogProbs[srcBeam];
+
+    atomicAdd(&bh.numBeamsCBA[bid], 1);
+}
+#endif
+
 void invokeInsertUnfinishedPath(BeamHypotheses& bh, cudaStream_t stream)
 {
+    #if defined(__aarch64__)
+    dim3 blockSize(bh.nBeamWidth);
+    dim3 gridSize(bh.nBatchSize);
+    insertUnfinishedPathKernelParallelV1<<<gridSize, blockSize, 0, stream>>>(bh);
+    #else
     insertUnfinishedPathKernel<<<bh.nBatchSize, 1, 0, stream>>>(bh);
+    #endif
 }
 
 __global__ void finalizeKernel(BeamHypotheses bh)

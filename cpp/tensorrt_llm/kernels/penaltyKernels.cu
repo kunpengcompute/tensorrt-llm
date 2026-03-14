@@ -222,10 +222,219 @@ __global__ void batchApplyPenalty(T const* const* inputLogits, T* outputLogits, 
     }
 }
 
+#if defined(__aarch64__)
+template <typename T>
+__global__ void batchApplyPenaltyOpt(
+    T const* const* inputLogits, T* outputLogits, T const* biases,
+    TokenIdType* penaltyWorkspace, TokenIdType const* penaltyWorkspacePrev,
+    float const* temperatures, float const* repetitionPenalties,
+    float const* presencePenalties, float const* frequencyPenalties,
+    SizeType32 maxSeqLen, SizeType32 vocabSize, SizeType32 vocabSizePadded,
+    TokenIdType const** outputIdsPtr, SizeType32 const** parentIdsPtr,
+    SizeType32 const* inputLengths, SizeType32 const* sequenceLengths,
+    SizeType32 const* minLengths, TokenIdType const* endIds,
+    SizeType32 const* batchSlots, SizeType32 const* tokensPerStep,
+    FinishedState const* finished)
+{
+    auto const beamWidth = static_cast<SizeType32>(gridDim.y);
+    auto const vocabBlocks = static_cast<SizeType32>(gridDim.z);
+
+    auto const batchIdx = static_cast<SizeType32>(blockIdx.x);
+    auto const beamIdx = static_cast<SizeType32>(blockIdx.y);
+    auto const vocabBlockIdx = static_cast<SizeType32>(blockIdx.z);
+    auto const stepIdx = 0;
+
+    auto const batchSlot = batchSlots[batchIdx];
+
+    FinishedState const finishState = finished != nullptr ? finished[batchSlot] : FinishedState::empty();
+    if (finishState.isSkipDecoding()) {
+        return;
+    }
+
+    auto const batchBeamStepIdx = batchIdx * beamWidth + beamIdx;
+    auto const batchSlotBeamIdx = batchSlot * beamWidth + beamIdx;
+    auto const inputLen = inputLengths == nullptr ? SizeType32{0} : inputLengths[batchSlotBeamIdx];
+    auto const currentStep = sequenceLengths == nullptr ? SizeType32{0} : sequenceLengths[batchSlotBeamIdx];
+    T const* biasBase = biases + batchSlot * vocabSizePadded;
+
+    SizeType32 vocabPerBlock = (vocabSize + vocabBlocks - 1) / vocabBlocks;
+    SizeType32 vocabStart = vocabBlockIdx * vocabPerBlock;
+    SizeType32 vocabEnd = min(vocabStart + vocabPerBlock, vocabSize);
+
+    float invTemperature{layers::DefaultDecodingParams::getTemperature()};
+    float repetitionPenalty{layers::DefaultDecodingParams::getRepetitionPenalty()};
+    float presencePenalty{layers::DefaultDecodingParams::getPresencePenalty()};
+    float frequencyPenalty{layers::DefaultDecodingParams::getFrequencyPenalty()};
+    SizeType32 minLength{layers::DefaultDecodingParams::getMinLength()};
+    bool accumulateVocab{false};
+    bool hasTemperature{false};
+    bool hasMinLength{false};
+
+    if (temperatures != nullptr) {
+        float temperature = temperatures[batchSlot];
+        invTemperature = 1.0f / (temperature + 1e-6f);
+        hasTemperature |= (!almostEqual(temperature, layers::DefaultDecodingParams::getTemperature(), 1e-9));
+    }
+    if (repetitionPenalties != nullptr) {
+        repetitionPenalty = repetitionPenalties[batchSlot];
+        accumulateVocab |= (!almostEqual(repetitionPenalty, layers::DefaultDecodingParams::getRepetitionPenalty(), 1e-9));
+    }
+    if (presencePenalties != nullptr) {
+        presencePenalty = presencePenalties[batchSlot];
+        accumulateVocab |= (!almostEqual(presencePenalty, layers::DefaultDecodingParams::getPresencePenalty(), 1e-9));
+    }
+    if (frequencyPenalties != nullptr) {
+        frequencyPenalty = frequencyPenalties[batchSlot];
+        accumulateVocab |= (!almostEqual(frequencyPenalty, layers::DefaultDecodingParams::getFrequencyPenalty(), 1e-9));
+    }
+    if (minLengths != nullptr) {
+        minLength = minLengths[batchSlot];
+        hasMinLength |= (minLength > 0);
+    }
+
+    if (accumulateVocab)
+    {
+        penaltyWorkspace += batchBeamStepIdx * vocabSize;
+
+        if (currentStep <= inputLen)
+        { // Context phase
+            for (auto index = vocabStart + static_cast<SizeType32>(threadIdx.x);
+                 index < vocabEnd;
+                 index += static_cast<SizeType32>(blockDim.x))
+            {
+                penaltyWorkspace[index] = 0;
+            }
+            __syncthreads();
+
+            for (auto step = static_cast<SizeType32>(threadIdx.x); step < inputLen;
+                 step += static_cast<SizeType32>(blockDim.x))
+            {
+                auto penaltyIndex = outputIdsPtr[batchSlot][beamIdx * maxSeqLen + step];
+                if (penaltyIndex >= vocabStart && penaltyIndex < vocabEnd)
+                {
+                    atomicAdd(&penaltyWorkspace[penaltyIndex], 1);
+                }
+            }
+        }
+        else
+        { // Generation phase
+            if (beamWidth > 1)
+            {
+                auto parentBeam = parentIdsPtr[batchSlot][beamIdx * maxSeqLen + currentStep - 1];
+                penaltyWorkspacePrev += (batchIdx * beamWidth + parentBeam) * vocabSize;
+
+                for (auto index = vocabStart + static_cast<SizeType32>(threadIdx.x);
+                     index < vocabEnd;
+                     index += static_cast<SizeType32>(blockDim.x))
+                {
+                    penaltyWorkspace[index] = penaltyWorkspacePrev[index];
+                }
+                __syncthreads();
+            }
+            if (threadIdx.x == 0)
+            {
+                auto penaltyIndex = outputIdsPtr[batchSlot][beamIdx * maxSeqLen + currentStep - 1];
+                if (penaltyIndex >= vocabStart && penaltyIndex < vocabEnd && penaltyIndex < vocabSize)
+                {
+                    penaltyWorkspace[penaltyIndex] += 1;
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    auto const inLogitsPtr = inputLogits[batchIdx] + beamIdx * vocabSizePadded;
+    auto outLogitsPtr = outputLogits + batchBeamStepIdx * vocabSizePadded;
+    T const MASK_VAL = (std::is_same<T, half>::value) ? -HALF_FLT_MAX : -FLT_MAX;
+
+    for (auto index = vocabStart + static_cast<SizeType32>(threadIdx.x);
+         index < vocabEnd;
+         index += static_cast<SizeType32>(blockDim.x))
+    {
+        auto logit = static_cast<float>(inLogitsPtr[index]);
+
+        if (biases != nullptr) {
+            logit += static_cast<float>(biasBase[index]);
+        }
+
+        if (hasTemperature) {
+            logit *= invTemperature;
+        }
+
+        if (accumulateVocab)
+        {
+            SizeType32 numOccurences = penaltyWorkspace[index];
+            if (numOccurences > 0)
+            {
+                if (repetitionPenalties != nullptr) {
+                    logit = logit < 0.0f ? logit * repetitionPenalty : logit / repetitionPenalty;
+                }
+                if (presencePenalties != nullptr) {
+                    logit -= presencePenalty;
+                }
+                if (frequencyPenalties != nullptr) {
+                    logit -= frequencyPenalty * numOccurences;
+                }
+            }
+        }
+
+        if (logit > static_cast<float>(-MASK_VAL)) {
+            logit = static_cast<float>(-MASK_VAL);
+        } else if (logit < static_cast<float>(MASK_VAL)) {
+            logit = static_cast<float>(MASK_VAL);
+        }
+
+        outLogitsPtr[index] = logit;
+    }
+
+    if (vocabBlockIdx == vocabBlocks - 1) {
+        for (auto index = vocabSize + static_cast<SizeType32>(threadIdx.x);
+             index < vocabSizePadded;
+             index += static_cast<SizeType32>(blockDim.x))
+        {
+            outLogitsPtr[index] = MASK_VAL;
+        }
+    }
+
+    // MinLength
+    if (hasMinLength)
+    {
+        __syncthreads();
+        TokenIdType endId = endIds[batchSlot];
+        if (threadIdx.x == 0 && (currentStep - inputLen < minLength) && endId > -1)
+        {
+            if (endId >= vocabStart && endId < vocabEnd) {
+                outLogitsPtr[endId] = MASK_VAL;
+            }
+        }
+    }
+}
+#endif
+
 template <typename T>
 void invokeBatchApplyPenalty(InvokeBatchApplyPenaltyParams<T> const& params)
 {
     TLLM_LOG_TRACE("%s start", __PRETTY_FUNCTION__);
+    #if defined(__aarch64__)
+    if (params.maxTokensPerStep != 1) {
+        dim3 block(512);
+        dim3 grid(params.batchSize, params.beamWidth, params.maxTokensPerStep);
+        batchApplyPenalty<T><<<grid, block, 0, params.stream>>>(params.inputLogits, params.outputLogits, params.biases,
+            params.penaltyWorkspace, params.penaltyWorkspacePrev, params.temperatures, params.repetitionPenalties,
+            params.presencePenalties, params.frequencyPenalties, params.maxSeqLen, params.vocabSize, params.vocabSizePadded,
+            params.outputIdsPtr, params.parentIdsPtr, params.inputLengths, params.sequenceLengths, params.minLengths,
+            params.endIds, params.batchSlots, params.tokensPerStep, params.finished);
+    } else {
+        constexpr int VOCAB_BLOCKS = 128;
+        dim3 block(512);
+        dim3 grid(params.batchSize, params.beamWidth, VOCAB_BLOCKS);
+        batchApplyPenaltyOpt<T><<<grid, block, 0, params.stream>>>(params.inputLogits, params.outputLogits, params.biases,
+            params.penaltyWorkspace, params.penaltyWorkspacePrev, params.temperatures, params.repetitionPenalties,
+            params.presencePenalties, params.frequencyPenalties, params.maxSeqLen, params.vocabSize, params.vocabSizePadded,
+            params.outputIdsPtr, params.parentIdsPtr, params.inputLengths, params.sequenceLengths, params.minLengths,
+            params.endIds, params.batchSlots, params.tokensPerStep, params.finished);
+    }
+    #else
     dim3 block(512);
     dim3 grid(params.batchSize, params.beamWidth, params.maxTokensPerStep);
     batchApplyPenalty<T><<<grid, block, 0, params.stream>>>(params.inputLogits, params.outputLogits, params.biases,
@@ -233,6 +442,7 @@ void invokeBatchApplyPenalty(InvokeBatchApplyPenaltyParams<T> const& params)
         params.presencePenalties, params.frequencyPenalties, params.maxSeqLen, params.vocabSize, params.vocabSizePadded,
         params.outputIdsPtr, params.parentIdsPtr, params.inputLengths, params.sequenceLengths, params.minLengths,
         params.endIds, params.batchSlots, params.tokensPerStep, params.finished);
+    #endif
 }
 
 template void invokeBatchApplyPenalty(InvokeBatchApplyPenaltyParams<float> const& params);
