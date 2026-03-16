@@ -1,0 +1,672 @@
+From d7a2ea516ec6c67f98d854dda437f10a675050ad Mon Sep 17 00:00:00 2001
+From: littleli <liruiyi5@huawei.com>
+Date: Mon, 9 Mar 2026 11:16:23 +0800
+Subject: [PATCH] =?UTF-8?q?ARM=E7=BC=96=E8=AF=91=E9=80=82=E9=85=8D?=
+ =?UTF-8?q?=EF=BC=8CCuda=20Kernel=E4=BC=98=E5=8C=96?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ cpp/tensorrt_llm/CMakeLists.txt               |   5 -
+ cpp/tensorrt_llm/kernels/beamSearchKernels.cu |  52 +++++
+ .../decoderMaskedMultiheadAttentionTemplate.h |  20 ++
+ cpp/tensorrt_llm/kernels/decodingCommon.cu    | 143 +++++++++++-
+ cpp/tensorrt_llm/kernels/decodingKernels.cu   |  67 ++++++
+ cpp/tensorrt_llm/kernels/penaltyKernels.cu    | 210 ++++++++++++++++++
+ 6 files changed, 491 insertions(+), 6 deletions(-)
+
+diff --git a/cpp/tensorrt_llm/CMakeLists.txt b/cpp/tensorrt_llm/CMakeLists.txt
+index c4814c1d4..167498ef5 100644
+--- a/cpp/tensorrt_llm/CMakeLists.txt
++++ b/cpp/tensorrt_llm/CMakeLists.txt
+@@ -44,11 +44,6 @@ if(NOT WIN32) # Linux
+     set(TARGET_ARCH "x86_64-linux-gnu")
+   elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
+     set(TARGET_ARCH "aarch64-linux-gnu")
+-    if(NOT ${OS_ID} MATCHES "ubuntu" OR ${OS_VERSION_ID} VERSION_LESS 22.04)
+-      message(
+-        FATAL_ERROR
+-          "The minimum system requirement for aarch64 is Ubuntu 22.04.")
+-    endif()
+   else()
+     message(
+       FATAL_ERROR
+diff --git a/cpp/tensorrt_llm/kernels/beamSearchKernels.cu b/cpp/tensorrt_llm/kernels/beamSearchKernels.cu
+index 97c35478b..592fdf531 100644
+--- a/cpp/tensorrt_llm/kernels/beamSearchKernels.cu
++++ b/cpp/tensorrt_llm/kernels/beamSearchKernels.cu
+@@ -126,11 +126,63 @@ __global__ void updateCacheIndirectionKernel(
+     tgtCI[tgtOffset] = (step == lastStep) ? tgtIndexBeam : srcCI[srcOffset];
+ }
+ 
++#if defined(__aarch64__)
++#define BEAMS_PER_BLOCK 96
++#define PER_STEP 8
++#define THREADS_PER_BLOCK (PER_STEP * BEAMS_PER_BLOCK)
++
++__global__ void updateCacheIndirectionKernelV1(
++    int* tgtCI, int const* srcCI, BeamHypotheses bh, int const nMaxAttentionWindow, int const nSinkTokenLength)
++{
++    // Update cache indirections which steps are between `bh.inputLength[x]` to `sequenceLengths[x]`
++    int const step = blockIdx.x * PER_STEP + threadIdx.x % PER_STEP;
++    size_t const nBM{bh.nBeamWidth};
++    size_t const nBMIn{bh.nBeamWidthIn};
++    size_t const nBMOut{bh.nBeamWidthOut};
++    size_t const nMSL{bh.nMaxSeqLen};
++    int const indexBatch = blockIdx.y;
++    int const batchSlot = bh.batchSlots[indexBatch];
++    int const tgtIndexBeam = blockIdx.z * BEAMS_PER_BLOCK + threadIdx.x / PER_STEP;
++    int const tgtIndexBatchBeam = batchSlot * nBM + tgtIndexBeam;
++    int const lastStep{bh.sequenceLengths[tgtIndexBatchBeam] - 1}; // minus 1 since it is updated in stage 3 kernel
++
++    // Return early when at least one of the conditions is true:
++    // 1. `step` is out of the bound
++    // 2. `step` is inside of input part (since context KV Cache is shared)
++    // 3. `step` is outside of attention widow
++    if (step >= nMSL || tgtIndexBeam >= bh.nBeamWidthOut || step < bh.inputLengths[tgtIndexBatchBeam] || step < (nMSL - nMaxAttentionWindow))
++    {
++        return;
++    }
++
++    // Keep all past tokens by parentIdsPtr
++    int const srcIndexBeam = bh.parentIdsPtr[batchSlot][tgtIndexBeam * nMSL + lastStep];
++    // Return early when the source beam isfinished
++    if (bh.finished[tgtIndexBatchBeam].isFinished())
++    {
++        return;
++    }
++
++    int const stepCirc = (step >= nSinkTokenLength)
++        ? nSinkTokenLength + (step - nSinkTokenLength) % (nMaxAttentionWindow - nSinkTokenLength)
++        : step;
++    // Consider cyclic kv cache for the indir tables
++    uint32_t const tgtOffset = batchSlot * nBMOut * nMaxAttentionWindow + tgtIndexBeam * nMaxAttentionWindow + stepCirc;
++    uint32_t const srcOffset = batchSlot * nBMIn * nMaxAttentionWindow + srcIndexBeam * nMaxAttentionWindow + stepCirc;
++    tgtCI[tgtOffset] = (step == lastStep) ? tgtIndexBeam : srcCI[srcOffset];
++}
++#endif
++
+ void invokeUpdateCacheIndirection(int* tgtCI, int const* srcCI, BeamHypotheses& bh,
+     runtime::SizeType32 const maxAttentionWindow, runtime::SizeType32 sinkTokenLength, cudaStream_t stream)
+ {
++    #if defined(__aarch64__)
++    dim3 grid_opt1(common::roundUp(bh.nMaxSeqLen, PER_STEP), bh.nBatchSize, common::roundUp(bh.nBeamWidthOut, BEAMS_PER_BLOCK ) / BEAMS_PER_BLOCK);
++    updateCacheIndirectionKernelV1<<<grid_opt1, THREADS_PER_BLOCK , 0, stream>>>(tgtCI, srcCI, bh, maxAttentionWindow, sinkTokenLength);
++    #else
+     dim3 const grid(common::roundUp(bh.nMaxSeqLen, 32), bh.nBatchSize, bh.nBeamWidthOut);
+     updateCacheIndirectionKernel<<<grid, 32, 0, stream>>>(tgtCI, srcCI, bh, maxAttentionWindow, sinkTokenLength);
++    #endif
+     sync_check_cuda_error(stream);
+ }
+ 
+diff --git a/cpp/tensorrt_llm/kernels/decoderMaskedMultiheadAttention/decoderMaskedMultiheadAttentionTemplate.h b/cpp/tensorrt_llm/kernels/decoderMaskedMultiheadAttention/decoderMaskedMultiheadAttentionTemplate.h
+index 744029c17..c37cceaac 100644
+--- a/cpp/tensorrt_llm/kernels/decoderMaskedMultiheadAttention/decoderMaskedMultiheadAttentionTemplate.h
++++ b/cpp/tensorrt_llm/kernels/decoderMaskedMultiheadAttention/decoderMaskedMultiheadAttentionTemplate.h
+@@ -1295,9 +1295,17 @@ template <
+     unsigned THREADS_PER_VALUE = threads_per_value<T>(dh_max(Dh)),
+     // The unroll factor for loading from K cache.
+     // Set it default to 4 for higher occupancy (by reducing registers usage).
++    #if defined(__aarch64__)
++    unsigned K_LOOP_UNROLL = 2,
++    #else
+     unsigned K_LOOP_UNROLL = 4,
++    #endif
+     // The unroll factor for loading from V cache.
++    #if defined(__aarch64__)
++    unsigned V_LOOP_UNROLL = 2,
++    #else
+     unsigned V_LOOP_UNROLL = 8,
++    #endif
+     // Launch bounds
+     unsigned MAX_THEADS_PER_BLOCK
+     = Launch_bounds_config<T, Tcache, THREADS_PER_BLOCK, dh_max(Dh), DO_CROSS_ATTENTION, HAS_BEAMS, POS_SHIFT>()
+@@ -1798,7 +1806,9 @@ __global__ void __launch_bounds__(MAX_THEADS_PER_BLOCK, MIN_BLOCKS_PER_SM) maske
+         qk = dot<Qk_vec_accum, Qk_vec_k>(q, k);
+         if (QK_VECS_PER_Dh_MAX <= WARP_SIZE)
+         {
++#if defined(__x86_64__)
+ #pragma unroll
++#endif
+             for (int mask = QK_VECS_PER_Dh_MAX / 2; mask >= 1; mask /= 2)
+             {
+                 qk += __shfl_xor_sync(shfl_mask(QK_VECS_PER_Dh_MAX), qk, mask);
+@@ -1896,7 +1906,9 @@ __global__ void __launch_bounds__(MAX_THEADS_PER_BLOCK, MIN_BLOCKS_PER_SM) maske
+ 
+     // Load the Q values from shared memory. The values are reused during the loop on K.
+     K_vec_accum q_vec[K_VECS_PER_THREAD];
++#if defined(__x86_64__)
+ #pragma unroll
++#endif
+     for (unsigned ii = 0; ii < K_VECS_PER_THREAD; ++ii)
+     {
+         q_vec[ii] = vec_conversion<K_vec_accum, K_vec_k>(*reinterpret_cast<K_vec_k const*>(
+@@ -2142,7 +2154,9 @@ __global__ void __launch_bounds__(MAX_THEADS_PER_BLOCK, MIN_BLOCKS_PER_SM) maske
+         qk_max = fmaxf(qk_max, __shfl_xor_sync(unsigned(-1), qk_max, 18));
+     }
+ #else
++#if defined(__x86_64__)
+ #pragma unroll
++#endif
+     for (int mask = WARP_SIZE / 2; mask >= THREADS_PER_KEY; mask /= 2)
+     {
+         qk_max = fmaxf(qk_max, __shfl_xor_sync(uint32_t(-1), qk_max, mask));
+@@ -2196,7 +2210,9 @@ __global__ void __launch_bounds__(MAX_THEADS_PER_BLOCK, MIN_BLOCKS_PER_SM) maske
+ 
+     // The warps finalize the reduction.
+     qk_max = lane < WARPS_PER_BLOCK ? red_smem[lane] : -FLT_MAX;
++#if defined(__x86_64__)
+ #pragma unroll
++#endif
+     for (int mask = WARPS_PER_BLOCK / 2; mask >= 1; mask /= 2)
+     {
+         qk_max = fmaxf(qk_max, __shfl_xor_sync(uint32_t(-1), qk_max, mask));
+@@ -2484,7 +2500,9 @@ __global__ void __launch_bounds__(MAX_THEADS_PER_BLOCK, MIN_BLOCKS_PER_SM) maske
+     __syncthreads();
+ 
+     // Run the final reduction amongst the different groups computing different partial outputs.
++#if defined(__x86_64__)
+ #pragma unroll
++#endif
+     for (int active_groups = V_PER_ITER; active_groups >= 2; active_groups /= 2)
+     {
+ 
+@@ -2664,7 +2682,9 @@ __global__ void __launch_bounds__(MAX_THEADS_PER_BLOCK, MIN_BLOCKS_PER_SM) maske
+             }
+ 
+             // Run the final reduction amongst the different groups computing different partial outputs.
++#if defined(__x86_64__)
+ #pragma unroll
++#endif
+             for (int active_groups = V_PER_ITER; active_groups >= 2; active_groups /= 2)
+             {
+ 
+diff --git a/cpp/tensorrt_llm/kernels/decodingCommon.cu b/cpp/tensorrt_llm/kernels/decodingCommon.cu
+index ad8249a3a..25b7b8365 100644
+--- a/cpp/tensorrt_llm/kernels/decodingCommon.cu
++++ b/cpp/tensorrt_llm/kernels/decodingCommon.cu
+@@ -21,6 +21,7 @@
+ #include "tensorrt_llm/runtime/common.h"
+ 
+ #include <cstdint>
++#include <cub/cub.cuh>
+ 
+ using namespace tensorrt_llm::common;
+ using namespace tensorrt_llm::runtime;
+@@ -188,6 +189,133 @@ __global__ void addBiasSoftMax(T* logits, T** logitsPtrs, T* probs, float* outpu
+     }
+ }
+ 
++#if defined(__aarch64__)
++struct __align__(8) MD
++{
++    float m;
++    float d;
++};
++
++__device__ __forceinline__ MD reduce_md_op(MD a, MD b)
++{
++    bool a_bigger = (a.m > b.m);
++    MD bigger_m = a_bigger ? a : b;
++    MD smaller_m = a_bigger ? b : a;
++    MD res;
++    res.d = bigger_m.d + smaller_m.d * __expf(smaller_m.m - bigger_m.m);
++    res.m = bigger_m.m;
++    return res;
++}
++
++template <typename T>
++__global__ void addBiasSoftMaxOnline(T* logits, T** logitsPtrs, T* probs, float* outputEntropy, T const* bias,
++    float const* temperatures, int32_t const* endIds, FinishedState const* finished, int32_t const* beamWidths,
++    int32_t const* batchSlots, float const* minPs, int32_t maxBatchSize, int32_t maxBeamWidth, int32_t vocabSize,
++    int32_t vocabSizePadded, bool skipSoftMax, bool batchSlotsLogits, bool ptrsForBeams, bool const* skipDecode)
++{
++    auto const batchIdx = blockIdx.x;
++    auto const beamIdx = blockIdx.y;
++    auto const batchSlot = batchSlots ? batchSlots[batchIdx] : batchIdx;
++    if (beamWidths && beamIdx >= beamWidths[batchSlot])
++    {
++        return;
++    }
++    if ((skipDecode != nullptr && skipDecode[batchSlot]))
++    {
++        return;
++    }
++
++    auto const batchIdxLogits = batchSlotsLogits ? batchSlot : batchIdx;
++    FinishedState const finishState
++        = finished != nullptr ? finished[beamIdx * maxBatchSize + batchSlot] : FinishedState::empty();
++    if (finishState.isSkipDecoding())
++    {
++        return;
++    }
++    bool const finish = finishState.isFinished();
++
++    auto logitsPtr = logitsPtrs ? (ptrsForBeams ? logitsPtrs[batchIdx * maxBeamWidth + beamIdx]
++                                                : logitsPtrs[batchIdx] + beamIdx * vocabSizePadded)
++                                : logits + (batchIdxLogits * maxBeamWidth + beamIdx) * vocabSizePadded;
++
++    T const MAX_T_VAL = (std::is_same<T, half>::value) ? HALF_FLT_MAX : FLT_MAX;
++    float const EPSILON = (std::is_same<T, half>::value) ? 1e-3f : 1e-6f;
++
++    auto const tempInv = temperatures ? T{1.f / (temperatures[batchSlot] + EPSILON)} : T{1.f};
++    float minP = minPs != nullptr ? minPs[batchSlot] : 0.0f;
++
++    MD md_partial;
++    md_partial.m = -FLT_MAX;
++    md_partial.d = 0.0F;
++
++    for (int tid = threadIdx.x; tid < vocabSizePadded; tid += blockDim.x)
++    {
++        auto logit = logitsPtr[tid];
++        logit = temperatures ? logit * tempInv : logit;
++
++        if (tid < vocabSize) {
++            if (finish && endIds != nullptr) {
++                logit = (tid == endIds[batchSlot]) ? MAX_T_VAL : -MAX_T_VAL;
++            } else {
++                logit += (bias != nullptr) ? bias[tid] : T{0.0f};
++            }
++        } else {
++            logit = -MAX_T_VAL;
++        }
++
++	logitsPtr[tid] = logit;
++        MD new_elem;
++        new_elem.m = static_cast<float>(logit);
++        new_elem.d = 1.0F;
++        md_partial = reduce_md_op(md_partial, new_elem);
++    }
++
++    if (skipSoftMax) return;
++    typedef cub::BlockReduce<MD, 1024> BlockReduce;
++    __shared__ typename BlockReduce::TempStorage temp_storage;
++    MD final_md = BlockReduce(temp_storage).Reduce(md_partial, reduce_md_op);
++
++    __shared__ float sMaxVal, sSumVal;
++    if (threadIdx.x == 0) {
++        sMaxVal = final_md.m;
++        sSumVal = final_md.d;
++    }
++    __syncthreads();
++
++    int const offset = (probs != nullptr) ? ((batchIdxLogits * maxBeamWidth + beamIdx) * vocabSizePadded) : 0;
++    T* dst = (probs != nullptr) ? probs : logitsPtr;
++    float entropy = 0.0f;
++    float sum_inverse = __fdividef(1.0F, sSumVal + EPSILON);
++    for (int tid = threadIdx.x; tid < vocabSizePadded; tid += blockDim.x)
++    {
++        float val = __expf(static_cast<float>(logitsPtr[tid]) - sMaxVal);
++
++        if (val < minP) {
++            val = 0.0f;
++            logitsPtr[tid] = -MAX_T_VAL;
++        }
++
++        float softmaxValue = val * sum_inverse;
++        if (outputEntropy) {
++            entropy += softmaxValue * __logf(softmaxValue + EPSILON);
++        }
++
++        if (probs != nullptr) {
++            dst[offset + tid] = static_cast<T>(softmaxValue);
++        } else {
++            logitsPtr[tid] = static_cast<T>(__logf(softmaxValue + EPSILON));
++        }
++    }
++
++    if (outputEntropy) {
++        entropy = blockReduceSum<float>(entropy);
++        if (threadIdx.x == 0) {
++            outputEntropy[batchSlot * maxBeamWidth + beamIdx] = -entropy;
++        }
++    }
++}
++#endif
++
+ template <typename T>
+ void invokeAddBiasSoftMax(BiasSoftmaxParams<T> const params, cudaStream_t stream)
+ {
+@@ -196,11 +324,24 @@ void invokeAddBiasSoftMax(BiasSoftmaxParams<T> const params, cudaStream_t stream
+     dim3 grid(params.batchSize, params.maxBeamWidth);
+     auto const vocabRoundedToWarp = roundUp(params.vocabSize, 32);
+     dim3 block(std::min(vocabRoundedToWarp, 1024)); // vocabSize is usually larger than 1024
++    #if defined(__aarch64__)
++    if (vocabRoundedToWarp < 1024) {
++        addBiasSoftMax<<<grid, block, 0, stream>>>(params.logits, params.logitsPtrs, params.probs, params.outputEntropy,
++        params.bias, params.temperatures, params.endIds, params.finished, params.beamWidths, params.batchSlots,
++        params.minPs, params.maxBatchSize, params.maxBeamWidth, params.vocabSize, params.vocabSizePadded,
++        params.skipSoftMax, params.batchSlotsLogits, params.ptrsForBeams, params.skipDecode);
++    } else {
++        addBiasSoftMaxOnline<<<grid, block, 0, stream>>>(params.logits, params.logitsPtrs, params.probs, params.outputEntropy,
++        params.bias, params.temperatures, params.endIds, params.finished, params.beamWidths, params.batchSlots,
++        params.minPs, params.maxBatchSize, params.maxBeamWidth, params.vocabSize, params.vocabSizePadded,
++        params.skipSoftMax, params.batchSlotsLogits, params.ptrsForBeams, params.skipDecode);
++    }
++    #else
+     addBiasSoftMax<<<grid, block, 0, stream>>>(params.logits, params.logitsPtrs, params.probs, params.outputEntropy,
+         params.bias, params.temperatures, params.endIds, params.finished, params.beamWidths, params.batchSlots,
+         params.minPs, params.maxBatchSize, params.maxBeamWidth, params.vocabSize, params.vocabSizePadded,
+         params.skipSoftMax, params.batchSlotsLogits, params.ptrsForBeams, params.skipDecode);
+-
++    #endif
+     TLLM_LOG_TRACE("%s stop", __PRETTY_FUNCTION__);
+ }
+ 
+diff --git a/cpp/tensorrt_llm/kernels/decodingKernels.cu b/cpp/tensorrt_llm/kernels/decodingKernels.cu
+index 77bc6b71a..a454d41ba 100644
+--- a/cpp/tensorrt_llm/kernels/decodingKernels.cu
++++ b/cpp/tensorrt_llm/kernels/decodingKernels.cu
+@@ -381,9 +381,76 @@ __global__ void insertUnfinishedPathKernel(BeamHypotheses bh)
+     }
+ }
+ 
++#if defined(__aarch64__)
++__global__ void insertUnfinishedPathKernelParallelV1(BeamHypotheses bh)
++{
++    size_t const bid = blockIdx.x;       // Batch index
++    size_t const tid = threadIdx.x;      // Beam index within block
++    size_t const nBM{bh.nBeamWidth};
++    size_t const nMBS{bh.nMaxBatchSize};
++    size_t const nMSL{bh.nMaxSeqLen};
++    bool const bOutputLogProbs{bh.logProbsCBA != nullptr && bh.logProbsTiled != nullptr};
++
++    if (bh.batchDones[bid] || tid >= nBM)
++    {
++        return;
++    }
++
++    int const i = tid;
++    int const srcBeam = bid * nBM + i;
++    int const dstBeam = bid * nBM * 2 + i + bh.numBeamsCBA[bid];
++    int const step = bh.sequenceLengths[srcBeam] - 1;
++
++    if (step < 0) return;
++
++    // The last token
++    int const srcId = srcBeam * nMSL + step;
++    int const dstId = dstBeam * nMSL + step;
++    bh.outputIdsCBA[dstId] = bh.outputIdsUnfinish[srcId];
++    if (bOutputLogProbs)
++    {
++        bh.logProbsCBA[dstId] = bh.logProbsTiled[step * nMBS * nBM + srcBeam];
++    }
++
++    // Previous tokens
++    int prevId = bh.parentIdsUnfinish[srcId];
++    for (int j = step - 1; j >= 0; --j)
++    {
++        int const index = bid * nBM * nMSL + prevId * nMSL + j;
++        bh.outputIdsCBA[dstBeam * nMSL + j] = bh.outputIdsUnfinish[index];
++        prevId = bh.parentIdsUnfinish[index];
++    }
++
++    if (bOutputLogProbs)
++    {
++        prevId = bh.parentIdsUnfinish[srcId];
++        for (int j = step - 1; j >= 0; --j)
++        {
++            int const index = bid * nBM * nMSL + prevId * nMSL + j;
++            bh.logProbsCBA[dstBeam * nMSL + j] = bh.logProbsTiled[j * nMBS * nBM + bid * nBM + prevId];
++            prevId = bh.parentIdsUnfinish[index];
++        }
++    }
++
++    // Other parameters
++    bh.sequenceLengthsCBA[dstBeam] = bh.sequenceLengths[srcBeam];
++    bh.normedScoresCBA[dstBeam]
++        = applyLengthPenalty(bh.cumLogProbs[srcBeam], step - bh.inputLengths[srcBeam] + 1, bh.lengthPenalties[bid]);
++    bh.cumLogProbsCBA[dstBeam] = bh.cumLogProbs[srcBeam];
++
++    atomicAdd(&bh.numBeamsCBA[bid], 1);
++}
++#endif
++
+ void invokeInsertUnfinishedPath(BeamHypotheses& bh, cudaStream_t stream)
+ {
++    #if defined(__aarch64__)
++    dim3 blockSize(bh.nBeamWidth);
++    dim3 gridSize(bh.nBatchSize);
++    insertUnfinishedPathKernelParallelV1<<<gridSize, blockSize, 0, stream>>>(bh);
++    #else
+     insertUnfinishedPathKernel<<<bh.nBatchSize, 1, 0, stream>>>(bh);
++    #endif
+ }
+ 
+ __global__ void finalizeKernel(BeamHypotheses bh)
+diff --git a/cpp/tensorrt_llm/kernels/penaltyKernels.cu b/cpp/tensorrt_llm/kernels/penaltyKernels.cu
+index 257ce8a51..7fc96901a 100644
+--- a/cpp/tensorrt_llm/kernels/penaltyKernels.cu
++++ b/cpp/tensorrt_llm/kernels/penaltyKernels.cu
+@@ -222,10 +222,219 @@ __global__ void batchApplyPenalty(T const* const* inputLogits, T* outputLogits,
+     }
+ }
+ 
++#if defined(__aarch64__)
++template <typename T>
++__global__ void batchApplyPenaltyOpt(
++    T const* const* inputLogits, T* outputLogits, T const* biases,
++    TokenIdType* penaltyWorkspace, TokenIdType const* penaltyWorkspacePrev,
++    float const* temperatures, float const* repetitionPenalties,
++    float const* presencePenalties, float const* frequencyPenalties,
++    SizeType32 maxSeqLen, SizeType32 vocabSize, SizeType32 vocabSizePadded,
++    TokenIdType const** outputIdsPtr, SizeType32 const** parentIdsPtr,
++    SizeType32 const* inputLengths, SizeType32 const* sequenceLengths,
++    SizeType32 const* minLengths, TokenIdType const* endIds,
++    SizeType32 const* batchSlots, SizeType32 const* tokensPerStep,
++    FinishedState const* finished)
++{
++    auto const beamWidth = static_cast<SizeType32>(gridDim.y);
++    auto const vocabBlocks = static_cast<SizeType32>(gridDim.z);
++
++    auto const batchIdx = static_cast<SizeType32>(blockIdx.x);
++    auto const beamIdx = static_cast<SizeType32>(blockIdx.y);
++    auto const vocabBlockIdx = static_cast<SizeType32>(blockIdx.z);
++    auto const stepIdx = 0;
++
++    auto const batchSlot = batchSlots[batchIdx];
++
++    FinishedState const finishState = finished != nullptr ? finished[batchSlot] : FinishedState::empty();
++    if (finishState.isSkipDecoding()) {
++        return;
++    }
++
++    auto const batchBeamStepIdx = batchIdx * beamWidth + beamIdx;
++    auto const batchSlotBeamIdx = batchSlot * beamWidth + beamIdx;
++    auto const inputLen = inputLengths == nullptr ? SizeType32{0} : inputLengths[batchSlotBeamIdx];
++    auto const currentStep = sequenceLengths == nullptr ? SizeType32{0} : sequenceLengths[batchSlotBeamIdx];
++    T const* biasBase = biases + batchSlot * vocabSizePadded;
++
++    SizeType32 vocabPerBlock = (vocabSize + vocabBlocks - 1) / vocabBlocks;
++    SizeType32 vocabStart = vocabBlockIdx * vocabPerBlock;
++    SizeType32 vocabEnd = min(vocabStart + vocabPerBlock, vocabSize);
++
++    float invTemperature{layers::DefaultDecodingParams::getTemperature()};
++    float repetitionPenalty{layers::DefaultDecodingParams::getRepetitionPenalty()};
++    float presencePenalty{layers::DefaultDecodingParams::getPresencePenalty()};
++    float frequencyPenalty{layers::DefaultDecodingParams::getFrequencyPenalty()};
++    SizeType32 minLength{layers::DefaultDecodingParams::getMinLength()};
++    bool accumulateVocab{false};
++    bool hasTemperature{false};
++    bool hasMinLength{false};
++
++    if (temperatures != nullptr) {
++        float temperature = temperatures[batchSlot];
++        invTemperature = 1.0f / (temperature + 1e-6f);
++        hasTemperature |= (!almostEqual(temperature, layers::DefaultDecodingParams::getTemperature(), 1e-9));
++    }
++    if (repetitionPenalties != nullptr) {
++        repetitionPenalty = repetitionPenalties[batchSlot];
++        accumulateVocab |= (!almostEqual(repetitionPenalty, layers::DefaultDecodingParams::getRepetitionPenalty(), 1e-9));
++    }
++    if (presencePenalties != nullptr) {
++        presencePenalty = presencePenalties[batchSlot];
++        accumulateVocab |= (!almostEqual(presencePenalty, layers::DefaultDecodingParams::getPresencePenalty(), 1e-9));
++    }
++    if (frequencyPenalties != nullptr) {
++        frequencyPenalty = frequencyPenalties[batchSlot];
++        accumulateVocab |= (!almostEqual(frequencyPenalty, layers::DefaultDecodingParams::getFrequencyPenalty(), 1e-9));
++    }
++    if (minLengths != nullptr) {
++        minLength = minLengths[batchSlot];
++        hasMinLength |= (minLength > 0);
++    }
++
++    if (accumulateVocab)
++    {
++        penaltyWorkspace += batchBeamStepIdx * vocabSize;
++
++        if (currentStep <= inputLen)
++        { // Context phase
++            for (auto index = vocabStart + static_cast<SizeType32>(threadIdx.x);
++                 index < vocabEnd;
++                 index += static_cast<SizeType32>(blockDim.x))
++            {
++                penaltyWorkspace[index] = 0;
++            }
++            __syncthreads();
++
++            for (auto step = static_cast<SizeType32>(threadIdx.x); step < inputLen;
++                 step += static_cast<SizeType32>(blockDim.x))
++            {
++                auto penaltyIndex = outputIdsPtr[batchSlot][beamIdx * maxSeqLen + step];
++                if (penaltyIndex >= vocabStart && penaltyIndex < vocabEnd)
++                {
++                    atomicAdd(&penaltyWorkspace[penaltyIndex], 1);
++                }
++            }
++        }
++        else
++        { // Generation phase
++            if (beamWidth > 1)
++            {
++                auto parentBeam = parentIdsPtr[batchSlot][beamIdx * maxSeqLen + currentStep - 1];
++                penaltyWorkspacePrev += (batchIdx * beamWidth + parentBeam) * vocabSize;
++
++                for (auto index = vocabStart + static_cast<SizeType32>(threadIdx.x);
++                     index < vocabEnd;
++                     index += static_cast<SizeType32>(blockDim.x))
++                {
++                    penaltyWorkspace[index] = penaltyWorkspacePrev[index];
++                }
++                __syncthreads();
++            }
++            if (threadIdx.x == 0)
++            {
++                auto penaltyIndex = outputIdsPtr[batchSlot][beamIdx * maxSeqLen + currentStep - 1];
++                if (penaltyIndex >= vocabStart && penaltyIndex < vocabEnd && penaltyIndex < vocabSize)
++                {
++                    penaltyWorkspace[penaltyIndex] += 1;
++                }
++            }
++        }
++        __syncthreads();
++    }
++
++    auto const inLogitsPtr = inputLogits[batchIdx] + beamIdx * vocabSizePadded;
++    auto outLogitsPtr = outputLogits + batchBeamStepIdx * vocabSizePadded;
++    T const MASK_VAL = (std::is_same<T, half>::value) ? -HALF_FLT_MAX : -FLT_MAX;
++
++    for (auto index = vocabStart + static_cast<SizeType32>(threadIdx.x);
++         index < vocabEnd;
++         index += static_cast<SizeType32>(blockDim.x))
++    {
++        auto logit = static_cast<float>(inLogitsPtr[index]);
++
++        if (biases != nullptr) {
++            logit += static_cast<float>(biasBase[index]);
++        }
++
++        if (hasTemperature) {
++            logit *= invTemperature;
++        }
++
++        if (accumulateVocab)
++        {
++            SizeType32 numOccurences = penaltyWorkspace[index];
++            if (numOccurences > 0)
++            {
++                if (repetitionPenalties != nullptr) {
++                    logit = logit < 0.0f ? logit * repetitionPenalty : logit / repetitionPenalty;
++                }
++                if (presencePenalties != nullptr) {
++                    logit -= presencePenalty;
++                }
++                if (frequencyPenalties != nullptr) {
++                    logit -= frequencyPenalty * numOccurences;
++                }
++            }
++        }
++
++        if (logit > static_cast<float>(-MASK_VAL)) {
++            logit = static_cast<float>(-MASK_VAL);
++        } else if (logit < static_cast<float>(MASK_VAL)) {
++            logit = static_cast<float>(MASK_VAL);
++        }
++
++        outLogitsPtr[index] = logit;
++    }
++
++    if (vocabBlockIdx == vocabBlocks - 1) {
++        for (auto index = vocabSize + static_cast<SizeType32>(threadIdx.x);
++             index < vocabSizePadded;
++             index += static_cast<SizeType32>(blockDim.x))
++        {
++            outLogitsPtr[index] = MASK_VAL;
++        }
++    }
++
++    // MinLength
++    if (hasMinLength)
++    {
++        __syncthreads();
++        TokenIdType endId = endIds[batchSlot];
++        if (threadIdx.x == 0 && (currentStep - inputLen < minLength) && endId > -1)
++        {
++            if (endId >= vocabStart && endId < vocabEnd) {
++                outLogitsPtr[endId] = MASK_VAL;
++            }
++        }
++    }
++}
++#endif
++
+ template <typename T>
+ void invokeBatchApplyPenalty(InvokeBatchApplyPenaltyParams<T> const& params)
+ {
+     TLLM_LOG_TRACE("%s start", __PRETTY_FUNCTION__);
++    #if defined(__aarch64__)
++    if (params.maxTokensPerStep != 1) {
++        dim3 block(512);
++        dim3 grid(params.batchSize, params.beamWidth, params.maxTokensPerStep);
++        batchApplyPenalty<T><<<grid, block, 0, params.stream>>>(params.inputLogits, params.outputLogits, params.biases,
++            params.penaltyWorkspace, params.penaltyWorkspacePrev, params.temperatures, params.repetitionPenalties,
++            params.presencePenalties, params.frequencyPenalties, params.maxSeqLen, params.vocabSize, params.vocabSizePadded,
++            params.outputIdsPtr, params.parentIdsPtr, params.inputLengths, params.sequenceLengths, params.minLengths,
++            params.endIds, params.batchSlots, params.tokensPerStep, params.finished);
++    } else {
++        constexpr int VOCAB_BLOCKS = 128;
++        dim3 block(512);
++        dim3 grid(params.batchSize, params.beamWidth, VOCAB_BLOCKS);
++        batchApplyPenaltyOpt<T><<<grid, block, 0, params.stream>>>(params.inputLogits, params.outputLogits, params.biases,
++            params.penaltyWorkspace, params.penaltyWorkspacePrev, params.temperatures, params.repetitionPenalties,
++            params.presencePenalties, params.frequencyPenalties, params.maxSeqLen, params.vocabSize, params.vocabSizePadded,
++            params.outputIdsPtr, params.parentIdsPtr, params.inputLengths, params.sequenceLengths, params.minLengths,
++            params.endIds, params.batchSlots, params.tokensPerStep, params.finished);
++    }
++    #else
+     dim3 block(512);
+     dim3 grid(params.batchSize, params.beamWidth, params.maxTokensPerStep);
+     batchApplyPenalty<T><<<grid, block, 0, params.stream>>>(params.inputLogits, params.outputLogits, params.biases,
+@@ -233,6 +442,7 @@ void invokeBatchApplyPenalty(InvokeBatchApplyPenaltyParams<T> const& params)
+         params.presencePenalties, params.frequencyPenalties, params.maxSeqLen, params.vocabSize, params.vocabSizePadded,
+         params.outputIdsPtr, params.parentIdsPtr, params.inputLengths, params.sequenceLengths, params.minLengths,
+         params.endIds, params.batchSlots, params.tokensPerStep, params.finished);
++    #endif
+ }
+ 
+ template void invokeBatchApplyPenalty(InvokeBatchApplyPenaltyParams<float> const& params);
+-- 
+2.28.0.windows.1
+
