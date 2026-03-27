@@ -1,8 +1,8 @@
-# 安装指南<a name="ZH-CN_TOPIC_0000002550252125"></a>
+# 安装指南
 
-## 已验证环境<a name="ZH-CN_TOPIC_0000002518450070"></a>
+## 已验证环境
 
-为保证您可以顺利安全地使用 TensorRT-LLM 特性，请确保所使用的环境信息在已验证环境范围内。
+为保证您可以顺利安全地使用Kunpeng TensorRT-LLM特性，请确保所使用的环境信息在已验证环境范围内。
 
 **硬件要求<a name="section230mcpsimp"></a>**
 
@@ -116,8 +116,7 @@
 </tbody>
 </table>
 
-## 编译安装<a name="ZH-CN_TOPIC_0000002518290142"></a>
-TensorRT-LLM源码编译的详细操作步骤如下：
+## 编译安装
 
 1. 获取TensorRT-LLM开源代码。假设安装路径为“/path/to“。
 
