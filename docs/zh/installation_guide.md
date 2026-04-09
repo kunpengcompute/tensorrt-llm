@@ -120,14 +120,14 @@
 
 1. 获取TensorRT-LLM开源代码。假设安装路径为“/path/to“。
 
-    ```
+    ```bash
     cd /path/to
     git clone --branch v1.0.0 https://github.com/NVIDIA/TensorRT-LLM.git
     ```
 
 2. 下载并应用Patch。
 
-    ```
+    ```bash
     yum install git-lfs
     git lfs install
     git clone https://gitcode.com/boostkit/tensorrt-llm.git k_tensort-llm
@@ -139,7 +139,7 @@
 
 3. 编译安装
 
-    ```
+    ```bash
     python3 ./scripts/build_wheel.py --cuda_architectures "89-real" --benchmarks
     pip install ./build/tensorrt_llm*.whl
     ```
