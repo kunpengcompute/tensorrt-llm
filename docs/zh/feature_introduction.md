@@ -7,7 +7,7 @@
 **问题：** TensorRT-LLM的默认实现Grid Size设置为batch size的大小，Block Size的线程块大小设置为1，每一个Block处理一个独立的请求。但是在当前Beam width不为1的场景，每一个请求内部可以独立为不同的beam，线程块设置为1时存在资源浪费。
 
 **优化点：** 每个Block仍然处理一个batch，但是在Block内部进行beam级别的并行，线程块大小设置为BeamWidth，每个线程处理一个beam。
-            
+
 ## batchApplyPenalty
 
 **功能：** 对模型输出的原始 Logits（未归一化的概率分数）应用各种惩罚（Penalties）和调整（Bias/Temperature）。
@@ -35,4 +35,3 @@
 **问题：** 原生softmax采用Safe Softmax，需要循环访问词表3次。
 
 **优化点：** 将Safe Softmax改为Online Softmax，减少一次访存。
-                                                                                                                                                                       

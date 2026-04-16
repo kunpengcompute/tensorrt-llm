@@ -5,12 +5,14 @@
 本项目基于开源的TensorRT-LLM，聚焦于大模型推理场景下的高效执行。通过算子优化、访存优化、参数配置等进行了深度的性能增强，显著提升了模型推理的吞吐量和时延表现。
 
 ## 版本说明
+
 | Kunpeng TensorRT-LLM| TensorRT-LLM |
 | --- | --- |
 |v1.0.0  |  v1.0.0 |
 
 ## 目录结构
- ```
+
+ ```bash
 tensorrt-llm
 ├── 001-boostsra-tensorrtllm-1.0.0-optimize_kernel.patch     // tensorrt-llm补丁文件
 ├── LICENSE                                                  // License文件
