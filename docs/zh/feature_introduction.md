@@ -1,8 +1,8 @@
-# 1 算子优化
+# 算子优化
 
-## 1.1 insertUnfinishedPathKernel优化
+## insertUnfinishedPathKernel优化
 
-### 1.1.1 功能设计
+**功能设计**
 
 **insertUnfinishedPathKernel：** 在生成任务结束（或达到最大长度）时，将所有尚未完成（Unfinished）的候选路径保存到最终的候选池（CBA, Candidate Beam Array）中。
 查看TensorRT-LLM的默认实现：
@@ -15,7 +15,7 @@ insertUnfinishedPathKernel<<<bh.nBatchSize, 1, 0, stream>>>(bh);
 
 **优化点：** 每个Block仍然处理一个batch，但是在Block内部进行beam级别的并行，线程块大小设置为BeamWidth，每个线程处理一个beam。
 
-### 1.1.2 功能实现
+**功能实现**
 
 - Kernel启动时调整Block的线程块大小
 
@@ -39,9 +39,9 @@ int const step = bh.sequenceLengths[srcBeam] - 1;
 ...
 ```
 
-## 1.2 batchApplyPenalty优化
+## batchApplyPenalty优化
 
-### 1.2.1 功能设计
+**功能设计**
 
 **batchApplyPenalty：** 对模型输出的原始 Logits（未归一化的概率分数）应用各种惩罚（Penalties）和调整（Bias/Temperature）。
 查看TensorRT-LLM的默认实现：
@@ -60,7 +60,7 @@ batchApplyPenalty<T><<<grid, block, 0, params.stream>>>(params.inputLogits, para
 
 **优化点：** 进行词表分区，每个Block处理部分词表内容，增大Block间并行度
 
-### 1.2.2 功能实现
+**功能实现**
 
 - 将词表分为VOCAB_BLOCKS个分区
 
@@ -86,9 +86,9 @@ SizeType32 vocabEnd = min(vocabStart + vocabPerBlock, vocabSize);
 ...
 ```
 
-## 1.3 updateCacheIndirectionKernel优化
+## updateCacheIndirectionKernel优化
 
-### 1.3.1 功能设计
+**功能设计**
 
 **updateCacheIndirectionKernel：** 在 Beam Search（束搜索）结束时，通过回溯父节点索引，将所有尚未完成的候选路径及其得分，从临时缓冲区完整地还原并搬运到最终的结果数组中。
 查看TensorRT-LLM的默认实现：
@@ -102,7 +102,7 @@ updateCacheIndirectionKernel<<<grid, 32, 0, stream>>>(tgtCI, srcCI, bh, maxAtten
 
 **优化点：** 减少Block的数量，增大Block内线程块数量。每一个Block处理更多的数据量，减少需要调度的 Block 总数。
 
-### 1.3.2 功能实现
+**功能实现**
 
 - 将grid size由common::roundUp(bh.nMaxSeqLen, 32) *bh.nBatchSize* bh.nBeamWidthOut减少为common::roundUp(bh.nMaxSeqLen, PER_STEP) *bh.nBatchSize* (common::roundUp(bh.nBeamWidthOut, BEAMS_PER_BLOCK ) / BEAMS_PER_BLOCK)
 - 将Block size由32增加至 BEAMS_PER_BLOCK * PER_STEP
@@ -117,9 +117,9 @@ updateCacheIndirectionKernelV1<<<grid_opt1, THREADS_PER_BLOCK , 0, stream>>>(tgt
 ...
 ```
 
-## 1.4 masked_multihead_attention_kernel优化
+## masked_multihead_attention_kernel优化
 
-### 1.4.1 功能设计
+**功能设计**
 
 **masked_multihead_attention_kernel：** masked_multihead_attention实现。
 查看TensorRT-LLM的默认实现：
@@ -142,7 +142,7 @@ unsigned V_LOOP_UNROLL = 8,
 
 **优化点：** 调整循环展开次数，减少大量的循环展开。
 
-### 1.4.2 功能实现
+**功能实现**
 
 - 将K，V循环展开次数调整至2，关闭大量的循环展开
 
@@ -157,9 +157,9 @@ unsigned V_LOOP_UNROLL = 2,
 // #pragma unroll
 ```
 
-## 1.5 addBiasSoftMax优化
+## addBiasSoftMax优化
 
-### 1.5.1 功能设计
+**功能设计**
 
 **addBiasSoftMax：** 对原始 Logits 进行后处理，将其转化为概率分布（Softmax）或对数概率（Log-Probs），同时应用多种采样策略。
 查看TensorRT-LLM的默认实现：
@@ -225,7 +225,7 @@ for (int tid = threadIdx.x; tid < vocabSizePadded; tid += blockDim.x)
 
 **优化点：** 将Safe Softmax改为Online Softmax，减少一次访存。
 
-### 1.5.2 功能实现
+**功能实现**
 
 - 定义结构体MD用来保存最大值和指数和，在第一次遍历时每个线程处理多个元素，线程内部维护m和d两个变量，利用公式更新
 - 通过block内规约，将每个线程维护的m和d合并为一个sMaxVal和sSumVal
