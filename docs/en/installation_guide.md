@@ -115,14 +115,14 @@ To use the Kunpeng TensorRT-LLM feature smoothly and securely, ensure that your 
 
 1. Obtain the TensorRT-LLM open-source code. Assume that the installation path is `/path/to`.
 
-    ```
+    ```bash
     cd /path/to
     git clone --branch v1.0.0 https://github.com/NVIDIA/TensorRT-LLM.git
     ```
 
 2. Download and apply the patch.
 
-    ```
+    ```bash
     yum install git-lfs
     git lfs install
     git clone https://gitcode.com/boostkit/tensorrt-llm.git k_tensort-llm
@@ -134,7 +134,7 @@ To use the Kunpeng TensorRT-LLM feature smoothly and securely, ensure that your 
 
 3. Compilation and Installation
 
-    ```
+    ```bash
     python3 ./scripts/build_wheel.py --cuda_architectures "89-real" --benchmarks
     pip install ./build/tensorrt_llm*.whl
     ```

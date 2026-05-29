@@ -77,7 +77,7 @@ batchApplyPenaltyOpt<T><<<grid, block, 0, params.stream>>>(params.inputLogits, p
 
 - 每个Block只处理所属词表分区内容
 
-```
+```bash
 ...
 // 计算vocab分区范围
 SizeType32 vocabPerBlock = (vocabSize + vocabBlocks - 1) / vocabBlocks;

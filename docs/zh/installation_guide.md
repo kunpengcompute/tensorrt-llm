@@ -22,6 +22,7 @@
 </td>
 <td class="cellrowborder" valign="top" width="80%" headers="mcps1.2.3.1.2 "><p id="p249mcpsimp"><a name="p249mcpsimp"></a><a name="p249mcpsimp"></a>鲲鹏950 7592C处理器</p>
 </td>
+</tr>
 </tbody>
 </table>
 
