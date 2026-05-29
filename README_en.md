@@ -16,7 +16,7 @@ This project is based on the open-source TensorRT-LLM and focuses on efficient e
 tensorrt-llm
 ├── 001-boostsra-tensorrtllm-1.0.0-optimize_kernel.patch     // TensorRT-LLM patch file
 ├── LICENSE                                                  // License file
-├── README.md                                                // Open-source repository introduction
+├── README_en.md                                                // Open-source repository introduction
 └── docs                                                     // Documentation
  ```
 
