@@ -4,21 +4,20 @@
 
 本项目基于开源的TensorRT-LLM，聚焦于大模型推理场景下的高效执行。通过算子优化、访存优化、参数配置等进行了深度的性能增强，显著提升了模型推理的吞吐量和时延表现。
 
-## 版本说明
-
-| Kunpeng TensorRT-LLM| TensorRT-LLM |
-| --- | --- |
-|v1.0.0  |  v1.0.0 |
-
 ## 目录结构
 
- ```bash
+```bash
 tensorrt-llm
 ├── 001-boostsra-tensorrtllm-1.0.0-optimize_kernel.patch     // tensorrt-llm补丁文件
 ├── LICENSE                                                  // License文件
 ├── README.md                                                // 开源仓介绍
 └── docs                                                     // 文档
- ```
+```
+
+## 版本说明
+
+关于Kunpeng TensorRT-LLM版本更新情况请参见《[版本说明书](./docs/zh/release_notes.md)》。
+
 ## 学习文档
 
 <table>
@@ -59,7 +58,7 @@ tensorrt-llm
 ## 贡献声明
 欢迎大家为社区做贡献，如果使用过程中有任何问题/建议，或者需要反馈特性需求和bug报告，可以提交[Issues](https://gitcode.com/boostkit/community/blob/master/docs/contributor/issue-submit.md)联系我们，具体贡献方法可参考[这里](https://gitcode.com/boostkit/community/blob/master/docs/contributor/contributing.md)。同时也欢迎大家在[讨论专区](https://gitcode.com/boostkit/community/discussions)展开讨论交流。感谢您的支持。
 
-## 
+## 致谢
 
 TensorRT-LLM由华为公司的下列部门联合贡献：
 

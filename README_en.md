@@ -4,21 +4,19 @@
 
 This project is based on the open-source TensorRT-LLM and focuses on efficient execution in Large Language Model (LLM) inference scenarios. Through deep performance enhancements including kernel optimization, memory access optimization, and parameter tuning, it significantly improves both inference throughput and latency performance.
 
-## Release Notes
-
-| Kunpeng TensorRT-LLM| TensorRT-LLM |
-| --- | --- |
-|v1.0.0  |  v1.0.0 |
-
 ## Directory Structure
 
- ```
+```text
 tensorrt-llm
 ├── 001-boostsra-tensorrtllm-1.0.0-optimize_kernel.patch     // TensorRT-LLM patch file
 ├── LICENSE                                                  // License file
 ├── README_en.md                                                // Open-source repository introduction
 └── docs                                                     // Documentation
- ```
+```
+
+## Release Notes
+
+For details about the version updates of the Kunpeng TensorRT-LLM, see [Release Notes](./docs/en/release_notes.md).
 
 ## Documents
 
