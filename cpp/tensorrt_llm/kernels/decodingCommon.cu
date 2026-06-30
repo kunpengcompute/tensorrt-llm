@@ -190,6 +190,8 @@ __global__ void addBiasSoftMax(T* logits, T** logitsPtrs, T* probs, float* outpu
 }
 
 #if defined(__aarch64__)
+// 参考来源：https://github.com/NVIDIA/online-softmax/blob/master/online_softmax_benchmark.cu
+// ***************************************************************************
 struct __align__(8) MD
 {
     float m;
@@ -206,6 +208,7 @@ __device__ __forceinline__ MD reduce_md_op(MD a, MD b)
     res.m = bigger_m.m;
     return res;
 }
+// ***************************************************************************
 
 template <typename T>
 __global__ void addBiasSoftMaxOnline(T* logits, T** logitsPtrs, T* probs, float* outputEntropy, T const* bias,
@@ -244,9 +247,12 @@ __global__ void addBiasSoftMaxOnline(T* logits, T** logitsPtrs, T* probs, float*
     auto const tempInv = temperatures ? T{1.f / (temperatures[batchSlot] + EPSILON)} : T{1.f};
     float minP = minPs != nullptr ? minPs[batchSlot] : 0.0f;
 
+    // 参考来源：https://github.com/NVIDIA/online-softmax/blob/master/online_softmax_benchmark.cu
+    // ***************************************************************************
     MD md_partial;
     md_partial.m = -FLT_MAX;
     md_partial.d = 0.0F;
+    // ***************************************************************************
 
     for (int tid = threadIdx.x; tid < vocabSizePadded; tid += blockDim.x)
     {
@@ -263,14 +269,19 @@ __global__ void addBiasSoftMaxOnline(T* logits, T** logitsPtrs, T* probs, float*
             logit = -MAX_T_VAL;
         }
 
-	logitsPtr[tid] = logit;
+	    logitsPtr[tid] = logit;
+        // 参考来源：https://github.com/NVIDIA/online-softmax/blob/master/online_softmax_benchmark.cu
+        // ***************************************************************************
         MD new_elem;
         new_elem.m = static_cast<float>(logit);
         new_elem.d = 1.0F;
         md_partial = reduce_md_op(md_partial, new_elem);
+        // ***************************************************************************
     }
 
     if (skipSoftMax) return;
+    // 参考来源：https://github.com/NVIDIA/online-softmax/blob/master/online_softmax_benchmark.cu
+    // ***************************************************************************
     typedef cub::BlockReduce<MD, 1024> BlockReduce;
     __shared__ typename BlockReduce::TempStorage temp_storage;
     MD final_md = BlockReduce(temp_storage).Reduce(md_partial, reduce_md_op);
@@ -281,6 +292,7 @@ __global__ void addBiasSoftMaxOnline(T* logits, T** logitsPtrs, T* probs, float*
         sSumVal = final_md.d;
     }
     __syncthreads();
+    // ***************************************************************************
 
     int const offset = (probs != nullptr) ? ((batchIdxLogits * maxBeamWidth + beamIdx) * vocabSizePadded) : 0;
     T* dst = (probs != nullptr) ? probs : logitsPtr;
