@@ -1,20 +1,10 @@
-From d7a2ea516ec6c67f98d854dda437f10a675050ad Mon Sep 17 00:00:00 2001
-From: littleli <liruiyi5@huawei.com>
-Date: Mon, 9 Mar 2026 11:16:23 +0800
-Subject: [PATCH] =?UTF-8?q?ARM=E7=BC=96=E8=AF=91=E9=80=82=E9=85=8D?=
- =?UTF-8?q?=EF=BC=8CCuda=20Kernel=E4=BC=98=E5=8C=96?=
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
-
----
- cpp/tensorrt_llm/CMakeLists.txt               |   5 -
- cpp/tensorrt_llm/kernels/beamSearchKernels.cu |  52 +++++
- .../decoderMaskedMultiheadAttentionTemplate.h |  20 ++
- cpp/tensorrt_llm/kernels/decodingCommon.cu    | 143 +++++++++++-
- cpp/tensorrt_llm/kernels/decodingKernels.cu   |  67 ++++++
- cpp/tensorrt_llm/kernels/penaltyKernels.cu    | 210 ++++++++++++++++++
- 6 files changed, 491 insertions(+), 6 deletions(-)
+ cpp/tensorrt_llm/CMakeLists.txt                    |   5 -
+ cpp/tensorrt_llm/kernels/beamSearchKernels.cu      |  52 +++++
+ .../decoderMaskedMultiheadAttentionTemplate.h      |  20 ++
+ cpp/tensorrt_llm/kernels/decodingCommon.cu         | 155 ++++++++++++++-
+ cpp/tensorrt_llm/kernels/decodingKernels.cu        |  67 +++++++
+ cpp/tensorrt_llm/kernels/penaltyKernels.cu         | 210 +++++++++++++++++++++
+ 6 files changed, 503 insertions(+), 6 deletions(-)
 
 diff --git a/cpp/tensorrt_llm/CMakeLists.txt b/cpp/tensorrt_llm/CMakeLists.txt
 index c4814c1d4..167498ef5 100644
@@ -183,7 +173,7 @@ index 744029c17..c37cceaac 100644
              {
  
 diff --git a/cpp/tensorrt_llm/kernels/decodingCommon.cu b/cpp/tensorrt_llm/kernels/decodingCommon.cu
-index ad8249a3a..25b7b8365 100644
+index ad8249a3a..a3085a741 100644
 --- a/cpp/tensorrt_llm/kernels/decodingCommon.cu
 +++ b/cpp/tensorrt_llm/kernels/decodingCommon.cu
 @@ -21,6 +21,7 @@
@@ -194,11 +184,13 @@ index ad8249a3a..25b7b8365 100644
  
  using namespace tensorrt_llm::common;
  using namespace tensorrt_llm::runtime;
-@@ -188,6 +189,133 @@ __global__ void addBiasSoftMax(T* logits, T** logitsPtrs, T* probs, float* outpu
+@@ -188,6 +189,145 @@ __global__ void addBiasSoftMax(T* logits, T** logitsPtrs, T* probs, float* outpu
      }
  }
  
 +#if defined(__aarch64__)
++// 参考来源：https://github.com/NVIDIA/online-softmax/blob/master/online_softmax_benchmark.cu
++// ***************************************************************************
 +struct __align__(8) MD
 +{
 +    float m;
@@ -215,6 +207,7 @@ index ad8249a3a..25b7b8365 100644
 +    res.m = bigger_m.m;
 +    return res;
 +}
++// ***************************************************************************
 +
 +template <typename T>
 +__global__ void addBiasSoftMaxOnline(T* logits, T** logitsPtrs, T* probs, float* outputEntropy, T const* bias,
@@ -253,9 +246,12 @@ index ad8249a3a..25b7b8365 100644
 +    auto const tempInv = temperatures ? T{1.f / (temperatures[batchSlot] + EPSILON)} : T{1.f};
 +    float minP = minPs != nullptr ? minPs[batchSlot] : 0.0f;
 +
++    // 参考来源：https://github.com/NVIDIA/online-softmax/blob/master/online_softmax_benchmark.cu
++    // ***************************************************************************
 +    MD md_partial;
 +    md_partial.m = -FLT_MAX;
 +    md_partial.d = 0.0F;
++    // ***************************************************************************
 +
 +    for (int tid = threadIdx.x; tid < vocabSizePadded; tid += blockDim.x)
 +    {
@@ -272,14 +268,19 @@ index ad8249a3a..25b7b8365 100644
 +            logit = -MAX_T_VAL;
 +        }
 +
-+	logitsPtr[tid] = logit;
++	    logitsPtr[tid] = logit;
++        // 参考来源：https://github.com/NVIDIA/online-softmax/blob/master/online_softmax_benchmark.cu
++        // ***************************************************************************
 +        MD new_elem;
 +        new_elem.m = static_cast<float>(logit);
 +        new_elem.d = 1.0F;
 +        md_partial = reduce_md_op(md_partial, new_elem);
++        // ***************************************************************************
 +    }
 +
 +    if (skipSoftMax) return;
++    // 参考来源：https://github.com/NVIDIA/online-softmax/blob/master/online_softmax_benchmark.cu
++    // ***************************************************************************
 +    typedef cub::BlockReduce<MD, 1024> BlockReduce;
 +    __shared__ typename BlockReduce::TempStorage temp_storage;
 +    MD final_md = BlockReduce(temp_storage).Reduce(md_partial, reduce_md_op);
@@ -290,6 +291,7 @@ index ad8249a3a..25b7b8365 100644
 +        sSumVal = final_md.d;
 +    }
 +    __syncthreads();
++    // ***************************************************************************
 +
 +    int const offset = (probs != nullptr) ? ((batchIdxLogits * maxBeamWidth + beamIdx) * vocabSizePadded) : 0;
 +    T* dst = (probs != nullptr) ? probs : logitsPtr;
@@ -328,7 +330,7 @@ index ad8249a3a..25b7b8365 100644
  template <typename T>
  void invokeAddBiasSoftMax(BiasSoftmaxParams<T> const params, cudaStream_t stream)
  {
-@@ -196,11 +324,24 @@ void invokeAddBiasSoftMax(BiasSoftmaxParams<T> const params, cudaStream_t stream
+@@ -196,11 +336,24 @@ void invokeAddBiasSoftMax(BiasSoftmaxParams<T> const params, cudaStream_t stream
      dim3 grid(params.batchSize, params.maxBeamWidth);
      auto const vocabRoundedToWarp = roundUp(params.vocabSize, 32);
      dim3 block(std::min(vocabRoundedToWarp, 1024)); // vocabSize is usually larger than 1024
@@ -667,6 +669,3 @@ index 257ce8a51..7fc96901a 100644
  }
  
  template void invokeBatchApplyPenalty(InvokeBatchApplyPenaltyParams<float> const& params);
--- 
-2.28.0.windows.1
-
