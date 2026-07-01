@@ -1,14 +1,18 @@
 # TensorRT-LLM介绍
 
+## 最新消息
+
+- [2026.06.30]：TensorRT-LLM优化补丁发布于Gitcode平台，聚焦于大模型推理场景下的高效执行。
+
 ## 项目介绍
 
-本项目基于开源的TensorRT-LLM，聚焦于大模型推理场景下的高效执行。通过算子优化、访存优化、参数配置等进行了深度的性能增强，显著提升了模型推理的吞吐量和时延表现。
+本项目基于开源的TensorRT-LLM，聚焦于大模型推理场景下的高效执行。通过算子优化、访存优化、参数配置等进行了深度的性能增强，显著提升了模型推理的吞吐量和延迟表现。
 
 ## 目录结构
 
 ```bash
 tensorrt-llm
-├── 001-boostsra-tensorrtllm-1.0.0-optimize_kernel.patch     // tensorrt-llm补丁文件
+├── 001-boostsra-tensorrtllm-1.0.0-optimize_kernel.patch     // TensorRT-LLM补丁文件
 ├── LICENSE                                                  // License文件
 ├── README.md                                                // 开源仓介绍
 └── docs                                                     // 文档
@@ -48,6 +52,7 @@ tensorrt-llm
 </table>
 
 ## 免责声明
+
 此代码仓计划参与TensorRT-LLM社区开源，编码风格遵照原生开源软件，继承原生开源软件安全设计，不破坏原生开源软件设计及编码风格和方式，软件的任何漏洞与安全问题，均由相应的上游社区根据其漏洞和安全响应机制解决。请密切关注上游社区发布的通知和版本更新。鲲鹏计算社区对软件的漏洞及安全问题不承担任何责任。
 
 ## License

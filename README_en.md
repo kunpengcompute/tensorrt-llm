@@ -1,22 +1,26 @@
 # Introduction to TensorRT-LLM
 
+## Latest Updates
+
+- [2026-06-30]: The TensorRT-LLM optimization patches were released on the Gitcode platform, focuses on efficient execution in Large Language Model (LLM) inference scenarios.
+
 ## Project Introduction
 
 This project is based on the open-source TensorRT-LLM and focuses on efficient execution in Large Language Model (LLM) inference scenarios. Through deep performance enhancements including kernel optimization, memory access optimization, and parameter tuning, it significantly improves both inference throughput and latency performance.
 
 ## Directory Structure
 
-```text
+```bash
 tensorrt-llm
 ├── 001-boostsra-tensorrtllm-1.0.0-optimize_kernel.patch     // TensorRT-LLM patch file
 ├── LICENSE                                                  // License file
-├── README_en.md                                                // Open-source repository introduction
+├── README_en.md                                             // Open-source repository introduction
 └── docs                                                     // Documentation
 ```
 
-## Release Notes
+## Version Description
 
-For details about the version updates of the Kunpeng TensorRT-LLM, see [Release Notes](./docs/en/release_notes.md).
+For details about the Kunpeng TensorRT-LLM version updates, see [Release Notes](./docs/en/release_notes.md).
 
 ## Documents
 
@@ -53,13 +57,15 @@ This code repository contributes to the TensorRT-LLM community. It strictly adhe
 
 ## License
 
-This project is licensed under Apache License 2.0. For details, see the <a href="./docs/LICENSE">LICENSE</a> file.
+This project is licensed under Apache License 2.0. For details, see the <a href="LICENSE.md">LICENSE</a>.
 
-This project document is licensed under CC-BY 4.0. For details, see the <a href="./docs/LICENSE">LICENSE</a> file.
+The documentation of this project is released under the CC-BY 4.0 license. For details, see the <a href="./docs/LICENSE">LICENSE</a>.
 
 ## Contribution Statement
 
-We welcome your contributions to the community. If you have any questions/suggestions or want to provide feedback on feature requirements and bug reports, you can submit [issues](https://gitcode.com/boostkit/community/blob/master/docs/contributor/issue-submit.md). For details, see [Contribution Guideline](https://gitcode.com/boostkit/community/blob/master/docs/contributor/contributing.md). You are also welcome to share insights in the [Discussions](https://gitcode.com/boostkit/community/discussions). Thank you for your support.
+We welcome your contributions to the community. If you have any questions/suggestions or want to provide feedback on feature requirements and bug reports, you can submit [issues](https://gitcode.com/boostkit/community/blob/master/docs/contributor/issue-submit.md). For details, see [Contribution Guideline](https://gitcode.com/boostkit/community/blob/master/docs/contributor/contributing.md). You are also welcome to share insights in [Discussions](https://gitcode.com/boostkit/community/discussions). Thank you for your support.
+
+## Acknowledgments
 
 TensorRT-LLM is jointly developed by the following Huawei department:
 
