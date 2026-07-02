@@ -7,7 +7,7 @@
 **insertUnfinishedPathKernel：** 在生成任务结束（或达到最大长度）时，将所有尚未完成（Unfinished）的候选路径保存到最终的候选池（CBA, Candidate Beam Array）中。
 查看TensorRT-LLM的默认实现：
 
-```shell
+```cpp
 insertUnfinishedPathKernel<<<bh.nBatchSize, 1, 0, stream>>>(bh);
 ```
 
@@ -19,25 +19,25 @@ insertUnfinishedPathKernel<<<bh.nBatchSize, 1, 0, stream>>>(bh);
 
 - Kernel启动时调整Block的线程块大小
 
-```shell
-dim3 blockSize(bh.nBeamWidth);
-dim3 gridSize(bh.nBatchSize);
-insertUnfinishedPathKernelParallelV1<<<gridSize, blockSize, 0, stream>>>(bh);
-```
+  ```cpp
+  dim3 blockSize(bh.nBeamWidth);
+  dim3 gridSize(bh.nBatchSize);
+  insertUnfinishedPathKernelParallelV1<<<gridSize, blockSize, 0, stream>>>(bh);
+  ```
 
 - Kernel内部修改访问逻辑，每个线程处理一个beam
 
-```shell
-...
-size_t const bid = blockIdx.x;       // Batch index
-size_t const tid = threadIdx.x;      // Beam index within block
-// 每个线程处理一个beam
-int const i = tid;
-int const srcBeam = bid * nBM + i;
-int const dstBeam = bid * nBM * 2 + i + bh.numBeamsCBA[bid];
-int const step = bh.sequenceLengths[srcBeam] - 1;
-...
-```
+  ```cpp
+  ...
+  size_t const bid = blockIdx.x;       // Batch index
+  size_t const tid = threadIdx.x;      // Beam index within block
+  // 每个线程处理一个beam
+  int const i = tid;
+  int const srcBeam = bid * nBM + i;
+  int const dstBeam = bid * nBM * 2 + i + bh.numBeamsCBA[bid];
+  int const step = bh.sequenceLengths[srcBeam] - 1;
+  ...
+  ```
 
 ## batchApplyPenalty优化
 
@@ -46,7 +46,7 @@ int const step = bh.sequenceLengths[srcBeam] - 1;
 **batchApplyPenalty：** 对模型输出的原始 Logits（未归一化的概率分数）应用各种惩罚（Penalties）和调整（Bias/Temperature）。
 查看TensorRT-LLM的默认实现：
 
-```shell
+```cpp
 dim3 block(512);
 dim3 grid(params.batchSize, params.beamWidth, params.maxTokensPerStep);
 batchApplyPenalty<T><<<grid, block, 0, params.stream>>>(params.inputLogits, params.outputLogits, params.biases,
@@ -64,50 +64,50 @@ batchApplyPenalty<T><<<grid, block, 0, params.stream>>>(params.inputLogits, para
 
 - 将词表分为VOCAB_BLOCKS个分区
 
-```shell
-constexpr int VOCAB_BLOCKS = 128;
-dim3 block(512);
-dim3 grid(params.batchSize, params.beamWidth, VOCAB_BLOCKS);
-batchApplyPenaltyOpt<T><<<grid, block, 0, params.stream>>>(params.inputLogits, params.outputLogits, params.biases,
+  ```cpp
+  constexpr int VOCAB_BLOCKS = 128;
+  dim3 block(512);
+  dim3 grid(params.batchSize, params.beamWidth, VOCAB_BLOCKS);
+  batchApplyPenaltyOpt<T><<<grid, block, 0, params.stream>>>(params.inputLogits, params.outputLogits, params.biases,
     params.penaltyWorkspace, params.penaltyWorkspacePrev, params.temperatures, params.repetitionPenalties,
     params.presencePenalties, params.frequencyPenalties, params.maxSeqLen, params.vocabSize, params.vocabSizePadded,
     params.outputIdsPtr, params.parentIdsPtr, params.inputLengths, params.sequenceLengths, params.minLengths,
     params.endIds, params.batchSlots, params.tokensPerStep, params.finished);
-```
+  ```
 
 - 每个Block只处理所属词表分区内容
 
-```bash
-...
-// 计算vocab分区范围
-SizeType32 vocabPerBlock = (vocabSize + vocabBlocks - 1) / vocabBlocks;
-SizeType32 vocabStart = vocabBlockIdx * vocabPerBlock;
-SizeType32 vocabEnd = min(vocabStart + vocabPerBlock, vocabSize);
-...
-```
+  ```cpp
+  ...
+  // 计算vocab分区范围
+  SizeType32 vocabPerBlock = (vocabSize + vocabBlocks - 1) / vocabBlocks;
+  SizeType32 vocabStart = vocabBlockIdx * vocabPerBlock;
+  SizeType32 vocabEnd = min(vocabStart + vocabPerBlock, vocabSize);
+  ...
+  ```
 
 ## updateCacheIndirectionKernel优化
 
 **功能设计**
 
-**updateCacheIndirectionKernel：** 在 Beam Search（束搜索）结束时，通过回溯父节点索引，将所有尚未完成的候选路径及其得分，从临时缓冲区完整地还原并搬运到最终的结果数组中。
+**updateCacheIndirectionKernel：** 在Beam Search（束搜索）结束时，通过回溯父节点索引，将所有尚未完成的候选路径及其得分，从临时缓冲区完整地还原并搬运到最终的结果数组中。
 查看TensorRT-LLM的默认实现：
 
-```shell
+```cpp
 dim3 const grid(common::roundUp(bh.nMaxSeqLen, 32), bh.nBatchSize, bh.nBeamWidthOut);
 updateCacheIndirectionKernel<<<grid, 32, 0, stream>>>(tgtCI, srcCI, bh, maxAttentionWindow, sinkTokenLength);
 ```
 
-其中Block线程块的大小固定为 32，在目前的 NVIDIA GPU 架构中，一个 Block（线程块）支持的最大线程数为 1024 个，存在资源浪费。
+其中Block线程块的大小固定为32，在目前的NVIDIA GPU架构中，一个Block（线程块）支持的最大线程数为1024个，存在资源浪费。
 
-**优化点：** 减少Block的数量，增大Block内线程块数量。每一个Block处理更多的数据量，减少需要调度的 Block 总数。
+**优化点：** 减少Block的数量，增大Block内线程块数量。每一个Block处理更多的数据量，减少需要调度的Block总数。
 
 **功能实现**
 
-- 将grid size由common::roundUp(bh.nMaxSeqLen, 32) *bh.nBatchSize* bh.nBeamWidthOut减少为common::roundUp(bh.nMaxSeqLen, PER_STEP) *bh.nBatchSize* (common::roundUp(bh.nBeamWidthOut, BEAMS_PER_BLOCK ) / BEAMS_PER_BLOCK)
-- 将Block size由32增加至 BEAMS_PER_BLOCK * PER_STEP
+- 将`grid size`由`common::roundUp(bh.nMaxSeqLen, 32) *bh.nBatchSize* bh.nBeamWidthOut`减少为`common::roundUp(bh.nMaxSeqLen, PER_STEP) *bh.nBatchSize* (common::roundUp(bh.nBeamWidthOut, BEAMS_PER_BLOCK ) / BEAMS_PER_BLOCK)`
+- 将`Block size`由32增加至`BEAMS_PER_BLOCK * PER_STEP`。
 
-```shell
+```cpp
 ...
 #define BEAMS_PER_BLOCK 96
 #define PER_STEP 8
@@ -124,7 +124,7 @@ updateCacheIndirectionKernelV1<<<grid_opt1, THREADS_PER_BLOCK , 0, stream>>>(tgt
 **masked_multihead_attention_kernel：** masked_multihead_attention实现。
 查看TensorRT-LLM的默认实现：
 
-```shell
+```cpp
 ...
 // The unroll factor for loading from K cache.
 unsigned K_LOOP_UNROLL = 4,
@@ -144,9 +144,9 @@ unsigned V_LOOP_UNROLL = 8,
 
 **功能实现**
 
-- 将K，V循环展开次数调整至2，关闭大量的循环展开
+将K，V循环展开次数调整至2，关闭大量的循环展开。
 
-```shell
+```cpp
 // The unroll factor for loading from K cache.
 unsigned K_LOOP_UNROLL = 2,
 // The unroll factor for loading from V cache.
@@ -164,7 +164,7 @@ unsigned V_LOOP_UNROLL = 2,
 **addBiasSoftMax：** 对原始 Logits 进行后处理，将其转化为概率分布（Softmax）或对数概率（Log-Probs），同时应用多种采样策略。
 查看TensorRT-LLM的默认实现：
 
-```shell
+```cpp
 ...
 for (int tid = threadIdx.x; tid < vocabSizePadded; tid += blockDim.x)
     {
@@ -227,11 +227,11 @@ for (int tid = threadIdx.x; tid < vocabSizePadded; tid += blockDim.x)
 
 **功能实现**
 
-- 定义结构体MD用来保存最大值和指数和，在第一次遍历时每个线程处理多个元素，线程内部维护m和d两个变量，利用公式更新
-- 通过block内规约，将每个线程维护的m和d合并为一个sMaxVal和sSumVal
-- 第二次循环，计算最终的softmax结果
+- 定义结构体MD用来保存最大值和指数和，在第一次遍历时每个线程处理多个元素，线程内部维护m和d两个变量，利用公式更新。
+- 通过block内规约，将每个线程维护的m和d合并为一个sMaxVal和sSumVal。
+- 第二次循环，计算最终的softmax结果。
 
-```shell
+```cpp
 
 struct __align__(8) MD
 {
