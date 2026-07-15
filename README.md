@@ -1,6 +1,6 @@
 # TensorRT-LLM介绍
 
-- [2026.06.30]：TensorRT-LLM优化补丁发布于Gitcode平台，聚焦于大模型推理场景下的高效执行。
+[2026.06.30]：TensorRT-LLM优化补丁发布于Gitcode平台，聚焦于大模型推理场景下的高效执行。
 
 ## 项目介绍
 

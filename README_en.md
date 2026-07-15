@@ -2,7 +2,7 @@
 
 ## Latest Updates
 
-- [2026-06-30]: The TensorRT-LLM optimization patches were released on the Gitcode platform, focuses on efficient execution in Large Language Model (LLM) inference scenarios.
+[2026-06-30]: The TensorRT-LLM optimization patches were released on the Gitcode platform, focuses on efficient execution in Large Language Model (LLM) inference scenarios.
 
 ## Project Introduction
 
