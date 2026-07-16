@@ -1,12 +1,12 @@
 # Installation Guide
 
-## Verified Environments
+## Verified Environment
 
 To use the Kunpeng TensorRT-LLM feature smoothly and securely, ensure that your environment is one of the verified environments.
 
 **Hardware Requirements<a name="section230mcpsimp"></a>**
 
-[**Table 1** Hardware requirement](#hardware-requirement) describes the verified hardware environment.
+[**Table 1**](#hardware-requirement) describes the verified hardware environment.
 
 **Table 1** Hardware requirement<a id="hardware-requirement"></a>
 
@@ -20,7 +20,7 @@ To use the Kunpeng TensorRT-LLM feature smoothly and securely, ensure that your 
 <tbody>
 <tr id="row245mcpsimp"><td class="cellrowborder" valign="top" width="20%" headers="mcps1.2.3.1.1 "><p id="p247mcpsimp"><a name="p247mcpsimp"></a><a name="p247mcpsimp"></a>CPU</p>
 </td>
-<td class="cellrowborder" valign="top" width="80%" headers="mcps1.2.3.1.2 "><p id="p249mcpsimp"><a name="p249mcpsimp"></a><a name="p249mcpsimp"></a>Kunpeng 950 processors</p>
+<td class="cellrowborder" valign="top" width="80%" headers="mcps1.2.3.1.2 "><p id="p249mcpsimp"><a name="p249mcpsimp"></a><a name="p249mcpsimp"></a>Kunpeng 950 processor</p>
 </td>
 </tr>
 </tbody>
@@ -28,7 +28,7 @@ To use the Kunpeng TensorRT-LLM feature smoothly and securely, ensure that your 
 
 **OS Requirements<a name="section250mcpsimp"></a>**
 
-[**Table 2** OS](#os) describes the verified OS.
+[**Table 2**](#os) describes the verified OS.
 
 **Table 2** OS<a id="os"></a>
 
@@ -57,7 +57,7 @@ To use the Kunpeng TensorRT-LLM feature smoothly and securely, ensure that your 
 
 **Software Requirements<a name="section290mcpsimp"></a>**
 
-[**Table 3** Software requirements](#software-requirements) describes the verified software environments.
+[**Table 3**](#software-requirements) describes the verified software environments.
 
 **Table 3** Software requirements<a id="software-requirements"></a>
 
@@ -85,7 +85,7 @@ To use the Kunpeng TensorRT-LLM feature smoothly and securely, ensure that your 
 </td>
 <td class="cellrowborder" valign="top" width="23.84%" headers="mcps1.2.5.1.2 "><p id="p334mcpsimp"><a name="p334mcpsimp"></a><a name="p334mcpsimp"></a>3.22.0</p>
 </td>
-<td class="cellrowborder" valign="top" width="45.48%" headers="mcps1.2.5.1.3 "><p id="p336mcpsimp"><a name="p336mcpsimp"></a><a name="p336mcpsimp"></a>CMake is the build tool of TF Serving. The CMake version must be 3.22.0 or later.</p>
+<td class="cellrowborder" valign="top" width="45.48%" headers="mcps1.2.5.1.3 "><p id="p336mcpsimp"><a name="p336mcpsimp"></a><a name="p336mcpsimp"></a>CMake is the build tool of TensorRT-LLM. The CMake version must be 3.22.0 or later.</p>
 </td>
 <td class="cellrowborder" valign="top" width="20.580000000000002%" headers="mcps1.2.5.1.4 "><p id="p338mcpsimp"><a name="p338mcpsimp"></a><a name="p338mcpsimp"></a>Install it using a Yum repository.</p>
 </td>
@@ -106,6 +106,15 @@ To use the Kunpeng TensorRT-LLM feature smoothly and securely, ensure that your 
 <td class="cellrowborder" valign="top" width="45.48%" headers="mcps1.2.5.1.3 "><p id="p345mcpsimp"><a name="p345mcpsimp"></a><a name="p345mcpsimp"></a>CUDA is a parallel computing platform and programming model developed by NVIDIA.</p>
 </td>
 <td class="cellrowborder" valign="top" width="20.51%" headers="mcps1.2.5.1.4 "><p id="p279mcpsimp"><a name="p279mcpsimp"></a><a name="p279mcpsimp"></a><a href="https://developer.nvidia.com/cuda-12-8-0-download-archive" target="_blank" rel="noopener noreferrer">Link</a></p>
+</td>
+</tr>
+<tr id="row340mcpsimp"><td class="cellrowborder" valign="top" width="10.100000000000001%" headers="mcps1.2.5.1.1 "><p id="p342mcpsimp"><a name="p342mcpsimp"></a><a name="p342mcpsimp"></a>torch-cu128</p>
+</td>
+<td class="cellrowborder" valign="top" width="23.84%" headers="mcps1.2.5.1.2 "><p id="p344mcpsimp"><a name="p344mcpsimp"></a><a name="p344mcpsimp"></a>2.8.0</p>
+</td>
+<td class="cellrowborder" valign="top" width="45.48%" headers="mcps1.2.5.1.3 "><p id="p346mcpsimp"><a name="p346mcpsimp"></a><a name="p346mcpsimp"></a>The CUDA-compiled PyTorch build is compatible with GPU acceleration.</p>
+</td>
+<td class="cellrowborder" valign="top" width="20.580000000000002%" headers="mcps1.2.5.1.4 "><p id="p348mcpsimp"><a name="p348mcpsimp"></a><a name="p348mcpsimp"></a>Install it using a pip repository.</p>
 </td>
 </tr>
 </tbody>
@@ -132,9 +141,9 @@ To use the Kunpeng TensorRT-LLM feature smoothly and securely, ensure that your 
     patch -p1 < ../k_tensort-llm/001-boostsra-tensorrtllm-1.0.0-optimize_kernel.patch
     ```
 
-3. Compilation and Installation
+3. Compile and install it.
 
     ```bash
-    python3 ./scripts/build_wheel.py --cuda_architectures "89-real" --benchmarks
+    python3 ./scripts/build_wheel.py --benchmarks
     pip install ./build/tensorrt_llm*.whl
     ```
