@@ -337,7 +337,7 @@ void invokeAddBiasSoftMax(BiasSoftmaxParams<T> const params, cudaStream_t stream
     auto const vocabRoundedToWarp = roundUp(params.vocabSize, 32);
     dim3 block(std::min(vocabRoundedToWarp, 1024)); // vocabSize is usually larger than 1024
     #if defined(__aarch64__)
-    if (vocabRoundedToWarp < 1024) {
+    if (vocabRoundedToWarp < 1024 || params.minPs != nullptr) {
         addBiasSoftMax<<<grid, block, 0, stream>>>(params.logits, params.logitsPtrs, params.probs, params.outputEntropy,
         params.bias, params.temperatures, params.endIds, params.finished, params.beamWidths, params.batchSlots,
         params.minPs, params.maxBatchSize, params.maxBeamWidth, params.vocabSize, params.vocabSizePadded,
