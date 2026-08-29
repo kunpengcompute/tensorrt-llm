@@ -391,14 +391,26 @@ __global__ void insertUnfinishedPathKernelParallelV1(BeamHypotheses bh)
     size_t const nMSL{bh.nMaxSeqLen};
     bool const bOutputLogProbs{bh.logProbsCBA != nullptr && bh.logProbsTiled != nullptr};
 
-    if (bh.batchDones[bid] || tid >= nBM)
+    if (bh.batchDones[bid])
+    {
+        return;
+    }
+
+    __shared__ int sIndexDstStart;
+    if (tid == 0)
+    {
+        sIndexDstStart = bh.numBeamsCBA[bid];
+    }
+    __syncthreads();
+
+    if (tid >= nBM)
     {
         return;
     }
 
     int const i = tid;
     int const srcBeam = bid * nBM + i;
-    int const dstBeam = bid * nBM * 2 + i + bh.numBeamsCBA[bid];
+    int const dstBeam = bid * nBM * 2 + i + sIndexDstStart;
     int const step = bh.sequenceLengths[srcBeam] - 1;
 
     if (step < 0) return;
