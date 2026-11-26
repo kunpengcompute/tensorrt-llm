@@ -24,15 +24,15 @@ tensorrt-llm
 
 ## 版本说明
 
-关于Kunpeng TensorRT-LLM版本更新情况请参见《[版本说明书](./docs/zh/release_notes.md)》。
+关于TensorRT-LLM版本更新情况请参见《[版本说明书](./docs/zh/release_notes.md)》。
 
 ## 学习文档
 
 | 学习文档名称 | 学习文档简介 |
 | --- | --- |
-| 《[版本说明书](./docs/zh/release_notes.md)》 | 提供Kunpeng TensorRT-LLM每个发布版本的基础信息和特性更新信息。 |
-| 《[特性介绍](./docs/zh/feature_introduction.md)》 | 介绍Kunpeng TensorRT-LLM基于开源TensorRT-LLM的功能点和优化点。 |
-| 《[安装指南](./docs/zh/installation_guide.md)》 | 提供Kunpeng TensorRT-LLM编译安装指导。 |
+| 《[版本说明书](./docs/zh/release_notes.md)》 | 提供TensorRT-LLM每个发布版本的基础信息和特性更新信息。 |
+| 《[特性介绍](./docs/zh/feature_introduction.md)》 | 介绍TensorRT-LLM基于开源TensorRT-LLM的功能点和优化点。 |
+| 《[安装指南](./docs/zh/installation_guide.md)》 | 提供TensorRT-LLM编译安装指导。 |
 
 ## 免责声明
 

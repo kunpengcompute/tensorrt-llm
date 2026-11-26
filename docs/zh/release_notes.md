@@ -10,7 +10,7 @@
 | --- | --- |
 | 产品名称 | Kunpeng BoostKit |
 | 产品版本 | 26.1.RC1 |
-| 软件名称 | Kunpeng TensorRT-LLM |
+| 软件名称 | TensorRT-LLM |
 | 软件版本 | V1.0.0 |
 
 ### 与操作系统、编译器和CPU配套说明
