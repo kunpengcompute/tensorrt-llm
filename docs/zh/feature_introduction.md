@@ -1,4 +1,6 @@
-# 算子优化
+# 算子优化特性介绍
+
+本文档介绍算子优化特性，涵盖insertUnfinishedPathKernel、batchApplyPenalty、updateCacheIndirectionKernel、masked_multihead_attention_kernel以及addBiasSoftMax五个优化方案，适合使用TensorRT-LLM的开发者。
 
 ## insertUnfinishedPathKernel优化
 
@@ -304,3 +306,9 @@ for (int tid = threadIdx.x; tid < vocabSizePadded; tid += blockDim.x)
     dst[offset + tid] = static_cast<T>(probValue);
 }
 ```
+
+## 修订记录
+
+|文档版本|发布日期|修改说明|
+|--|--|--|
+|01|2026-06-30|第一次正式发布。|
